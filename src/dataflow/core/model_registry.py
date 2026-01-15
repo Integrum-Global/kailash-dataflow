@@ -201,6 +201,8 @@ class ModelRegistry:
             # Get database-specific statements
             if database_type == "sqlite":
                 statements = self._get_sqlite_registry_table_statements()
+            elif database_type == "mysql":
+                statements = self._get_mysql_registry_table_statements()
             else:
                 statements = self._get_postgresql_registry_table_statements()
 
@@ -220,18 +222,43 @@ class ModelRegistry:
 
                 # ✅ FIX: Use synchronous SQLDatabaseNode with LocalRuntime for DDL operations
                 # SQLDatabaseNode is synchronous and works in all contexts (sync/async/pytest)
-                init_runtime = LocalRuntime()
-                results, _ = init_runtime.execute(workflow.build())
-                if f"create_registry_table_{i}" not in results or results[
-                    f"create_registry_table_{i}"
-                ].get("error"):
-                    error_msg = results.get(f"create_registry_table_{i}", {}).get(
-                        "error", "Unknown error"
-                    )
-                    logger.error(
-                        f"Failed to execute registry table statement {i}: {error_msg}"
-                    )
-                    return False
+                try:
+                    init_runtime = LocalRuntime()
+                    results, _ = init_runtime.execute(workflow.build())
+                    if f"create_registry_table_{i}" not in results or results[
+                        f"create_registry_table_{i}"
+                    ].get("error"):
+                        error_msg = results.get(f"create_registry_table_{i}", {}).get(
+                            "error", "Unknown error"
+                        )
+                        error_lower = str(error_msg).lower()
+                        # For MySQL, ignore "duplicate key name" errors when creating indexes
+                        # This happens when indexes already exist (MySQL doesn't support IF NOT EXISTS for indexes)
+                        if database_type == "mysql" and (
+                            "duplicate key name" in error_lower
+                            or "already exists" in error_lower
+                        ):
+                            logger.debug(
+                                f"Index already exists (ignoring for MySQL): {error_msg}"
+                            )
+                            continue  # Continue with next statement
+                        logger.error(
+                            f"Failed to execute registry table statement {i}: {error_msg}"
+                        )
+                        return False
+                except Exception as exec_error:
+                    # For MySQL, ignore "duplicate key name" errors when creating indexes
+                    error_lower = str(exec_error).lower()
+                    if database_type == "mysql" and (
+                        "duplicate key name" in error_lower
+                        or "1061" in error_lower  # MySQL error code for duplicate key
+                        or "already exists" in error_lower
+                    ):
+                        logger.debug(
+                            f"Index already exists (ignoring for MySQL): {exec_error}"
+                        )
+                        continue  # Continue with next statement
+                    raise  # Re-raise other errors
 
             return True
 
@@ -285,6 +312,30 @@ class ModelRegistry:
             "CREATE INDEX IF NOT EXISTS idx_model_registry_checksum ON dataflow_model_registry(model_checksum)",
             "CREATE INDEX IF NOT EXISTS idx_model_registry_name ON dataflow_model_registry(model_name)",
             "CREATE INDEX IF NOT EXISTS idx_model_registry_status ON dataflow_model_registry(status)",
+        ]
+
+    def _get_mysql_registry_table_statements(self) -> List[str]:
+        """Get MySQL model registry table creation statements."""
+        return [
+            """
+            CREATE TABLE IF NOT EXISTS dataflow_model_registry (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                model_name VARCHAR(255) NOT NULL,
+                model_checksum VARCHAR(64) NOT NULL,
+                model_definitions JSON NOT NULL,
+                application_id VARCHAR(255),
+                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status VARCHAR(50) DEFAULT 'active',
+                version INT DEFAULT 1,
+                metadata JSON,
+                UNIQUE KEY unique_model_per_app (model_name, application_id)
+            )
+            """,
+            "CREATE INDEX idx_model_registry_application ON dataflow_model_registry(application_id)",
+            "CREATE INDEX idx_model_registry_checksum ON dataflow_model_registry(model_checksum)",
+            "CREATE INDEX idx_model_registry_name ON dataflow_model_registry(model_name)",
+            "CREATE INDEX idx_model_registry_status ON dataflow_model_registry(status)",
         ]
 
     def _extract_query_data(
@@ -470,6 +521,41 @@ class ModelRegistry:
                             model_name,  # For version calculation
                             application_id
                             or self._get_application_id(),  # For version calculation
+                            json.dumps(
+                                {
+                                    "source": "model_registry",
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                }
+                            ),
+                        ],
+                    },
+                )
+            elif database_type == "mysql":
+                # MySQL uses ON DUPLICATE KEY UPDATE and %s parameters
+                workflow.add_node(
+                    "SQLDatabaseNode",
+                    "register_model",
+                    {
+                        "connection_string": db_url,
+                        "database_type": database_type,
+                        "query": """
+                        INSERT INTO dataflow_model_registry
+                        (model_name, model_checksum, model_definitions, application_id,
+                         status, version, metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            model_checksum = VALUES(model_checksum),
+                            model_definitions = VALUES(model_definitions),
+                            updated_at = CURRENT_TIMESTAMP,
+                            version = version + 1
+                    """,
+                        "parameters": [
+                            model_name,
+                            model_checksum,
+                            json.dumps(model_definitions),
+                            application_id or self._get_application_id(),
+                            "active",
+                            1,
                             json.dumps(
                                 {
                                     "source": "model_registry",

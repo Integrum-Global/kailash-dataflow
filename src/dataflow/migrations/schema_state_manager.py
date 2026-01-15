@@ -55,9 +55,10 @@ def _execute_workflow_safe(workflow) -> Tuple[Dict[str, Any], str]:
     results = {}
     run_id = f"sync_ddl_{id(workflow)}"
 
-    for node in built_workflow.nodes:
+    # FIX: built_workflow.nodes is a dict, not a list - iterate over values
+    for node in built_workflow.nodes.values():
         node_id = node.node_id
-        params = node.parameters
+        params = node.config  # FIX: NodeInstance uses .config, not .parameters
 
         # Extract connection string and query from node parameters
         connection_string = params.get("connection_string", "")
@@ -1211,6 +1212,20 @@ class MigrationHistoryManager:
                     CHECK (status IN ('pending', 'applied', 'failed', 'rolled_back'))
                 )
             """
+        elif database_type.lower() == "mysql":
+            # MySQL-specific: use JSON instead of JSONB, DATETIME instead of TIMESTAMP WITH TIME ZONE
+            create_table_sql = """
+                CREATE TABLE IF NOT EXISTS dataflow_migration_history (
+                    migration_id VARCHAR(255) PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    operations JSON,
+                    status VARCHAR(50) NOT NULL,
+                    applied_at DATETIME,
+                    checksum VARCHAR(64),
+                    duration_ms INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """
         else:  # PostgreSQL
             create_table_sql = """
                 CREATE TABLE IF NOT EXISTS dataflow_migration_history (
@@ -1248,6 +1263,16 @@ class MigrationHistoryManager:
                     return False
 
             # Create indexes in separate operations
+            # MySQL doesn't support CREATE INDEX IF NOT EXISTS, so use database-specific approach
+            if database_type.lower() == "mysql":
+                # For MySQL, simply try to create the indexes and ignore "duplicate key" errors
+                status_index_sql = "CREATE INDEX idx_migration_history_status ON dataflow_migration_history(status)"
+                applied_at_index_sql = "CREATE INDEX idx_migration_history_applied_at ON dataflow_migration_history(applied_at)"
+            else:
+                # PostgreSQL and SQLite support IF NOT EXISTS
+                status_index_sql = "CREATE INDEX IF NOT EXISTS idx_migration_history_status ON dataflow_migration_history(status)"
+                applied_at_index_sql = "CREATE INDEX IF NOT EXISTS idx_migration_history_applied_at ON dataflow_migration_history(applied_at)"
+
             workflow = WorkflowBuilder()
             workflow.add_node(
                 "SQLDatabaseNode",
@@ -1255,7 +1280,7 @@ class MigrationHistoryManager:
                 {
                     "connection_string": connection_url,
                     "database_type": database_type,
-                    "query": "CREATE INDEX IF NOT EXISTS idx_migration_history_status ON dataflow_migration_history(status)",
+                    "query": status_index_sql,
                     "validate_queries": False,
                 },
             )
@@ -1266,17 +1291,29 @@ class MigrationHistoryManager:
                 {
                     "connection_string": connection_url,
                     "database_type": database_type,
-                    "query": "CREATE INDEX IF NOT EXISTS idx_migration_history_applied_at ON dataflow_migration_history(applied_at)",
+                    "query": applied_at_index_sql,
                     "validate_queries": False,
                 },
             )
 
             # ✅ FIX: Use _execute_workflow_safe for async-safe execution in Docker/FastAPI
             results, _ = _execute_workflow_safe(workflow)
-            return not any(
-                results.get(node_id, {}).get("error")
-                for node_id in ["add_status_index", "add_applied_at_index"]
-            )
+
+            # For MySQL, ignore "duplicate key" errors when creating indexes
+            for node_id in ["add_status_index", "add_applied_at_index"]:
+                error = results.get(node_id, {}).get("error")
+                if error:
+                    error_lower = str(error).lower()
+                    # Ignore duplicate index errors for MySQL
+                    if (
+                        "duplicate key name" in error_lower
+                        or "already exists" in error_lower
+                    ):
+                        logger.debug(f"Index already exists (ignoring): {error}")
+                    else:
+                        logger.error(f"Failed to create index: {error}")
+                        return False
+            return True
 
         except Exception as e:
             logger.error(f"Failed to create migration history table: {e}")

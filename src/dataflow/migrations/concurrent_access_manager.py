@@ -173,18 +173,33 @@ class MigrationLockManager:
         self.lock_timeout = lock_timeout
         self.process_id = f"{os.getpid()}_{uuid.uuid4().hex[:8]}"
         self._table_ensured = False
+        # Detect database type from connection manager for database-specific SQL
+        self._db_type = getattr(connection_manager, "_parameter_style", "postgresql")
 
     async def _ensure_lock_table(self):
         """Ensure migration lock table exists."""
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS dataflow_migration_locks (
-            schema_name VARCHAR(255) PRIMARY KEY,
-            holder_process_id VARCHAR(255) NOT NULL,
-            acquired_at TIMESTAMP NOT NULL,
-            expires_at TIMESTAMP NOT NULL,
-            lock_data TEXT
-        )
-        """
+        # Use database-specific CREATE TABLE syntax
+        if self._db_type == "mysql":
+            create_table_sql = """
+            CREATE TABLE IF NOT EXISTS dataflow_migration_locks (
+                schema_name VARCHAR(255) PRIMARY KEY,
+                holder_process_id VARCHAR(255) NOT NULL,
+                acquired_at DATETIME NOT NULL,
+                expires_at DATETIME NOT NULL,
+                lock_data TEXT
+            )
+            """
+        else:
+            # PostgreSQL and SQLite use TIMESTAMP
+            create_table_sql = """
+            CREATE TABLE IF NOT EXISTS dataflow_migration_locks (
+                schema_name VARCHAR(255) PRIMARY KEY,
+                holder_process_id VARCHAR(255) NOT NULL,
+                acquired_at TIMESTAMP NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                lock_data TEXT
+            )
+            """
 
         try:
             await self.connection_manager.execute_query(create_table_sql)
@@ -217,13 +232,30 @@ class MigrationLockManager:
         # First, cleanup any expired locks
         await self._cleanup_expired_locks()
 
-        # Try to acquire lock using asyncpg syntax
-        insert_lock_sql = """
-        INSERT INTO dataflow_migration_locks
-        (schema_name, holder_process_id, acquired_at, expires_at, lock_data)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (schema_name) DO NOTHING
-        """
+        # Use database-specific INSERT syntax to handle conflicts
+        # PostgreSQL: ON CONFLICT DO NOTHING
+        # MySQL: INSERT IGNORE
+        # SQLite: INSERT OR IGNORE
+        if self._db_type == "mysql":
+            insert_lock_sql = """
+            INSERT IGNORE INTO dataflow_migration_locks
+            (schema_name, holder_process_id, acquired_at, expires_at, lock_data)
+            VALUES (%s, %s, %s, %s, %s)
+            """
+        elif self._db_type == "sqlite":
+            insert_lock_sql = """
+            INSERT OR IGNORE INTO dataflow_migration_locks
+            (schema_name, holder_process_id, acquired_at, expires_at, lock_data)
+            VALUES (?, ?, ?, ?, ?)
+            """
+        else:
+            # PostgreSQL
+            insert_lock_sql = """
+            INSERT INTO dataflow_migration_locks
+            (schema_name, holder_process_id, acquired_at, expires_at, lock_data)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (schema_name) DO NOTHING
+            """
 
         try:
             result = await self.connection_manager.execute_query(
@@ -242,11 +274,22 @@ class MigrationLockManager:
             if result and (
                 "INSERT 0 1" in str(result) if isinstance(result, str) else result
             ):
-                # Verify we are the lock holder
-                check_sql = """
-                SELECT holder_process_id FROM dataflow_migration_locks
-                WHERE schema_name = $1 AND holder_process_id = $2
-                """
+                # Verify we are the lock holder - use database-specific placeholders
+                if self._db_type == "mysql":
+                    check_sql = """
+                    SELECT holder_process_id FROM dataflow_migration_locks
+                    WHERE schema_name = %s AND holder_process_id = %s
+                    """
+                elif self._db_type == "sqlite":
+                    check_sql = """
+                    SELECT holder_process_id FROM dataflow_migration_locks
+                    WHERE schema_name = ? AND holder_process_id = ?
+                    """
+                else:
+                    check_sql = """
+                    SELECT holder_process_id FROM dataflow_migration_locks
+                    WHERE schema_name = $1 AND holder_process_id = $2
+                    """
 
                 check_result = await self.connection_manager.execute_query(
                     check_sql, (schema_name, self.process_id)
@@ -273,10 +316,22 @@ class MigrationLockManager:
         Args:
             schema_name: Name of schema to unlock
         """
-        delete_lock_sql = """
-        DELETE FROM dataflow_migration_locks
-        WHERE schema_name = $1 AND holder_process_id = $2
-        """
+        # Use database-specific placeholders
+        if self._db_type == "mysql":
+            delete_lock_sql = """
+            DELETE FROM dataflow_migration_locks
+            WHERE schema_name = %s AND holder_process_id = %s
+            """
+        elif self._db_type == "sqlite":
+            delete_lock_sql = """
+            DELETE FROM dataflow_migration_locks
+            WHERE schema_name = ? AND holder_process_id = ?
+            """
+        else:
+            delete_lock_sql = """
+            DELETE FROM dataflow_migration_locks
+            WHERE schema_name = $1 AND holder_process_id = $2
+            """
 
         try:
             await self.connection_manager.execute_query(
@@ -307,11 +362,25 @@ class MigrationLockManager:
         # Clean up expired locks first
         await self._cleanup_expired_locks()
 
-        check_sql = """
-        SELECT holder_process_id, acquired_at
-        FROM dataflow_migration_locks
-        WHERE schema_name = $1 AND expires_at > $2
-        """
+        # Use database-specific placeholders
+        if self._db_type == "mysql":
+            check_sql = """
+            SELECT holder_process_id, acquired_at
+            FROM dataflow_migration_locks
+            WHERE schema_name = %s AND expires_at > %s
+            """
+        elif self._db_type == "sqlite":
+            check_sql = """
+            SELECT holder_process_id, acquired_at
+            FROM dataflow_migration_locks
+            WHERE schema_name = ? AND expires_at > ?
+            """
+        else:
+            check_sql = """
+            SELECT holder_process_id, acquired_at
+            FROM dataflow_migration_locks
+            WHERE schema_name = $1 AND expires_at > $2
+            """
 
         try:
             result = await self.connection_manager.execute_query(
@@ -362,10 +431,22 @@ class MigrationLockManager:
 
     async def _cleanup_expired_locks(self):
         """Clean up expired locks from the database."""
-        cleanup_sql = """
-        DELETE FROM dataflow_migration_locks
-        WHERE expires_at <= $1
-        """
+        # Use database-specific placeholders
+        if self._db_type == "mysql":
+            cleanup_sql = """
+            DELETE FROM dataflow_migration_locks
+            WHERE expires_at <= %s
+            """
+        elif self._db_type == "sqlite":
+            cleanup_sql = """
+            DELETE FROM dataflow_migration_locks
+            WHERE expires_at <= ?
+            """
+        else:
+            cleanup_sql = """
+            DELETE FROM dataflow_migration_locks
+            WHERE expires_at <= $1
+            """
 
         try:
             await self.connection_manager.execute_query(cleanup_sql, (datetime.now(),))
@@ -394,22 +475,41 @@ class ConcurrentMigrationQueue:
         self._queue_lock = threading.RLock()
         self._next_position = 0
         self._table_ensured = False
+        # Detect database type from connection manager for database-specific SQL
+        self._db_type = getattr(connection_manager, "_parameter_style", "postgresql")
 
     async def _ensure_queue_table(self):
         """Ensure migration queue table exists."""
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS dataflow_migration_queue (
-            queue_id VARCHAR(255) PRIMARY KEY,
-            schema_name VARCHAR(255) NOT NULL,
-            priority INTEGER NOT NULL,
-            status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
-            operations TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL,
-            started_at TIMESTAMP,
-            completed_at TIMESTAMP,
-            error_message TEXT
-        )
-        """
+        # Use database-specific CREATE TABLE syntax
+        if self._db_type == "mysql":
+            create_table_sql = """
+            CREATE TABLE IF NOT EXISTS dataflow_migration_queue (
+                queue_id VARCHAR(255) PRIMARY KEY,
+                schema_name VARCHAR(255) NOT NULL,
+                priority INTEGER NOT NULL,
+                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+                operations TEXT NOT NULL,
+                created_at DATETIME NOT NULL,
+                started_at DATETIME,
+                completed_at DATETIME,
+                error_message TEXT
+            )
+            """
+        else:
+            # PostgreSQL and SQLite use TIMESTAMP
+            create_table_sql = """
+            CREATE TABLE IF NOT EXISTS dataflow_migration_queue (
+                queue_id VARCHAR(255) PRIMARY KEY,
+                schema_name VARCHAR(255) NOT NULL,
+                priority INTEGER NOT NULL,
+                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+                operations TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                error_message TEXT
+            )
+            """
 
         try:
             await self.connection_manager.execute_query(create_table_sql)

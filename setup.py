@@ -9,7 +9,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="kailash-dataflow",
-    version="0.10.14",
+    version="0.10.15",
     author="Integrum",
     author_email="info@integrum.com",
     description="Workflow-native database framework for Kailash SDK",

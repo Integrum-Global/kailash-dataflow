@@ -348,13 +348,16 @@ class ConnectionParser:
                 scheme = components.get("scheme", "").lower()
 
                 # Map database schemes to AsyncSQLDatabaseNode database types
-                if scheme in ["postgresql", "postgres"]:
+                # Handle SQLAlchemy-style schemes like mysql+pymysql, postgresql+asyncpg, etc.
+                if scheme in ["postgresql", "postgres"] or scheme.startswith(
+                    "postgresql+"
+                ):
                     return "postgresql"
-                elif scheme in ["mysql"]:
+                elif scheme == "mysql" or scheme.startswith("mysql+"):
                     return "mysql"
                 elif scheme in ["sqlite"]:
                     return "sqlite"
-                elif scheme in ["mongodb"]:
+                elif scheme in ["mongodb"] or scheme.startswith("mongodb+"):
                     return "mongodb"
                 elif not scheme:
                     # No scheme found - likely a file path (SQLite)

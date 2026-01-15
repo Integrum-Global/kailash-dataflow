@@ -31,7 +31,7 @@ class ConnectionManagerAdapter:
     - Error handling and logging
     """
 
-    def __init__(self, dataflow_instance, parameter_style: str = "postgresql"):
+    def __init__(self, dataflow_instance, parameter_style: Optional[str] = None):
         """
         Initialize connection manager adapter.
 
@@ -40,11 +40,20 @@ class ConnectionManagerAdapter:
 
         Args:
             dataflow_instance: DataFlow instance with connection config
-            parameter_style: Database parameter style ('postgresql' or 'sqlite')
+            parameter_style: Database parameter style (auto-detected if not provided)
         """
         self.dataflow = dataflow_instance
-        self._parameter_style = parameter_style
         self._transaction_started = False
+
+        # Auto-detect parameter style from database type if not provided
+        if parameter_style:
+            self._parameter_style = parameter_style
+        else:
+            from ..adapters.connection_parser import ConnectionParser
+
+            db_url = dataflow_instance.config.database.url
+            db_type = ConnectionParser.detect_database_type(db_url)
+            self._parameter_style = db_type  # postgresql, mysql, or sqlite
 
         # ✅ FIX: Detect async context and use appropriate runtime
         # This prevents deadlocks when DataFlow is used in FastAPI, pytest async, etc.
@@ -261,31 +270,56 @@ class ConnectionManagerAdapter:
         self, sql: str, params: Optional[List]
     ) -> Tuple[str, Optional[List]]:
         """
-        Convert parameter placeholders from %s format to database-specific format.
+        Convert parameter placeholders to database-specific format.
+
+        Handles both:
+        - %s format (neutral/MySQL format)
+        - $1, $2, ... format (PostgreSQL format)
 
         Args:
-            sql: SQL string with %s placeholders
+            sql: SQL string with placeholders
             params: Parameter values
 
         Returns:
             Tuple of (converted_sql, params)
         """
-        if not sql or "%s" not in sql:
+        if not sql:
             return sql, params
 
+        import re
+
+        # Count placeholders to determine format
+        pct_s_count = sql.count("%s")
+        dollar_placeholders = re.findall(r"\$\d+", sql)
+        dollar_count = len(dollar_placeholders)
+
+        if pct_s_count == 0 and dollar_count == 0:
+            return sql, params
+
+        converted_sql = sql
+
         if self._parameter_style == "postgresql":
-            # Convert %s to $1, $2, $3, etc. for PostgreSQL
-            converted_sql = sql
-            placeholder_count = sql.count("%s")
+            if pct_s_count > 0:
+                # Convert %s to $1, $2, $3, etc. for PostgreSQL
+                for i in range(pct_s_count):
+                    converted_sql = converted_sql.replace("%s", f"${i + 1}", 1)
+            # If already $N format, no conversion needed
+            return converted_sql, params
 
-            for i in range(placeholder_count):
-                converted_sql = converted_sql.replace("%s", f"${i + 1}", 1)
-
+        elif self._parameter_style == "mysql":
+            if dollar_count > 0:
+                # Convert $1, $2, etc. to %s for MySQL
+                converted_sql = re.sub(r"\$\d+", "%s", sql)
+            # If already %s format, no conversion needed
             return converted_sql, params
 
         elif self._parameter_style == "sqlite":
-            # SQLite uses ? placeholders
-            converted_sql = sql.replace("%s", "?")
+            if pct_s_count > 0:
+                # SQLite uses ? placeholders
+                converted_sql = sql.replace("%s", "?")
+            elif dollar_count > 0:
+                # Convert $N to ? for SQLite
+                converted_sql = re.sub(r"\$\d+", "?", sql)
             return converted_sql, params
 
         else:

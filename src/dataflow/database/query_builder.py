@@ -483,7 +483,9 @@ def create_query_builder(
     if database_url:
         if database_url.startswith(("postgresql://", "postgres://")):
             db_type = DatabaseType.POSTGRESQL
-        elif database_url.startswith("mysql://"):
+        elif database_url.startswith(
+            ("mysql://", "mysql+pymysql://", "mysql+aiomysql://")
+        ):
             db_type = DatabaseType.MYSQL
         elif database_url.startswith("sqlite://"):
             db_type = DatabaseType.SQLITE

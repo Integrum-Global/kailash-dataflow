@@ -57,6 +57,9 @@ class SyncDDLExecutor:
             return "sqlite"
         elif "mysql" in self.database_url:
             return "mysql"
+        elif "mongodb" in self.database_url:
+            # MongoDB is a document database - no SQL DDL needed
+            return "mongodb"
         else:
             # Default to SQLite for safety
             logger.warning(
@@ -77,6 +80,12 @@ class SyncDDLExecutor:
             return self._get_sqlite_connection()
         elif self._db_type == "mysql":
             return self._get_mysql_connection()
+        elif self._db_type == "mongodb":
+            raise NotImplementedError(
+                "MongoDB is a document database and doesn't use SQL DDL. "
+                "SyncDDLExecutor is only for SQL databases (PostgreSQL, MySQL, SQLite). "
+                "MongoDB collections are created automatically on first document insert."
+            )
         else:
             return self._get_sqlite_connection()
 

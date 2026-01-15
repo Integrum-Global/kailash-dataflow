@@ -2216,9 +2216,14 @@ class NodeGenerator:
                     # Get the table name directly
                     table_name = self.dataflow_instance._get_table_name(self.model_name)
 
-                    # Simple DELETE query with RETURNING for PostgreSQL
-                    # Use ? placeholder which AsyncSQLDatabaseNode will convert to $1 for PostgreSQL
-                    query = f"DELETE FROM {table_name} WHERE id = ? RETURNING id"
+                    # Database-specific DELETE query
+                    # PostgreSQL/SQLite support RETURNING, MySQL does not
+                    if database_type.lower() == "mysql":
+                        query = f"DELETE FROM {table_name} WHERE id = %s"
+                    elif database_type.lower() == "postgresql":
+                        query = f"DELETE FROM {table_name} WHERE id = $1 RETURNING id"
+                    else:  # sqlite
+                        query = f"DELETE FROM {table_name} WHERE id = ? RETURNING id"
 
                     # Debug log
                     import logging

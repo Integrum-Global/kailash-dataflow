@@ -710,6 +710,8 @@ class DataFlow:
             database_url = self.config.database.url or ":memory:"
             if "postgresql" in database_url or "postgres" in database_url:
                 dialect = "postgresql"
+            elif "mysql" in database_url:
+                dialect = "mysql"
             elif "sqlite" in database_url or database_url == ":memory:":
                 dialect = "sqlite"
                 # SQLite is fully supported for production with enterprise adapter
@@ -951,11 +953,27 @@ class DataFlow:
         # Bind the method as a classmethod
         cls.query_builder = classmethod(query_builder)
 
-        # Tables will be created lazily when first accessed via node operations
-        # This eliminates the need for async operations during model registration
-        logger.debug(
-            f"Model '{model_name}' registered - table will be created lazily on first access"
-        )
+        # CRITICAL FIX: Use sync DDL for immediate table creation when auto_migrate=True
+        # This works in ALL contexts including Docker/FastAPI without event loop issues
+        # Uses SyncDDLExecutor with psycopg2/sqlite3 (purely synchronous, no asyncio)
+        if self._auto_migrate and not self._existing_schema_mode:
+            # Create table immediately using sync DDL
+            sync_success = self._create_table_sync(model_name)
+            if sync_success:
+                logger.debug(
+                    f"Model '{model_name}' registered - table created via sync DDL"
+                )
+            else:
+                # Fallback: table will be created lazily on first access
+                logger.debug(
+                    f"Model '{model_name}' registered - sync DDL failed, "
+                    f"table will be created lazily on first access"
+                )
+        else:
+            # Tables will be created lazily when first accessed via node operations
+            logger.debug(
+                f"Model '{model_name}' registered - table will be created lazily on first access"
+            )
 
         return cls
 
@@ -3621,7 +3639,12 @@ class DataFlow:
         Returns:
             Complete CREATE TABLE SQL statement
         """
-        table_name = self._class_name_to_table_name(model_name)
+        # Use the stored table_name from model registration (respects __tablename__)
+        # Fall back to _class_name_to_table_name for backward compatibility
+        model_info = self._models.get(model_name, {})
+        table_name = model_info.get("table_name") or self._class_name_to_table_name(
+            model_name
+        )
         fields = (
             model_fields
             if model_fields is not None
@@ -3646,8 +3669,11 @@ class DataFlow:
         # Add primary key ID column based on type
         if id_type == str:
             # String ID models need user-provided IDs
-            if database_type.lower() in ["postgresql", "mysql"]:
+            if database_type.lower() == "postgresql":
                 sql_parts.append("    id TEXT PRIMARY KEY,")
+            elif database_type.lower() == "mysql":
+                # MySQL doesn't allow TEXT as primary key - use VARCHAR(255)
+                sql_parts.append("    id VARCHAR(255) PRIMARY KEY,")
             else:  # sqlite
                 sql_parts.append("    id TEXT PRIMARY KEY,")
         else:
@@ -5764,12 +5790,18 @@ class DataFlow:
         if cached is not None:
             node, cached_loop_id = cached
             # Return cached node if event loop hasn't changed
-            # (or if we don't have a running loop yet - it will be checked later)
-            if cached_loop_id == current_loop_id or current_loop_id is None:
+            # NOTE: If cached node was created without event loop (sync context like auto_migrate)
+            # but now there IS a running loop, we must recreate to avoid "attached to different loop" errors
+            if cached_loop_id == current_loop_id:
+                return node
+            elif current_loop_id is None:
+                # No running loop yet - return cached, will be validated when loop exists
                 return node
             else:
                 # Event loop changed - need to recreate the node
-                # This happens when pytest-asyncio creates new event loops between tests
+                # This happens when:
+                # 1. pytest-asyncio creates new event loops between tests
+                # 2. Node was created in sync context (auto_migrate) but now used in async context
                 logger.debug(
                     f"Event loop changed for {database_type} node "
                     f"(old: {cached_loop_id}, new: {current_loop_id}). Recreating node."
@@ -5949,6 +5981,245 @@ class DataFlow:
                     )
                     # Continue with other statements even if one fails
                     continue
+
+    def _create_table_sync(self, model_name: str) -> bool:
+        """Create a table for a single model using synchronous DDL execution.
+
+        This method uses SyncDDLExecutor which works in ANY context:
+        - CLI scripts (no event loop)
+        - FastAPI/Docker (event loop running)
+        - pytest (both sync and async)
+
+        No event loop involvement at all - uses psycopg2/sqlite3 synchronous drivers.
+
+        Args:
+            model_name: Name of the model to create table for
+
+        Returns:
+            bool: True if table was created successfully
+        """
+        # Skip if auto_migrate is disabled
+        if not self._auto_migrate:
+            logger.debug(
+                f"Skipping sync table creation for '{model_name}' (auto_migrate=False)"
+            )
+            return True
+
+        # Skip if existing_schema_mode is enabled
+        if self._existing_schema_mode:
+            logger.debug(
+                f"Skipping sync table creation for '{model_name}' (existing_schema_mode=True)"
+            )
+            return True
+
+        try:
+            from ..migrations.sync_ddl_executor import SyncDDLExecutor
+
+            # Get database URL
+            database_url = self.config.database.url
+            if not database_url:
+                logger.warning(
+                    f"No database URL configured, skipping sync table creation for '{model_name}'"
+                )
+                return False
+
+            # CRITICAL: Skip sync DDL for in-memory SQLite databases
+            # SyncDDLExecutor creates a separate connection, which for :memory: databases
+            # means tables are created in a DIFFERENT in-memory database than CRUD operations.
+            # In-memory databases must use lazy creation (ensure_table_exists) which uses
+            # the shared _memory_connection that CRUD operations also use.
+            if database_url == ":memory:" or database_url == "sqlite:///:memory:":
+                logger.debug(
+                    f"Skipping sync DDL for in-memory database '{model_name}'. "
+                    f"Tables will be created lazily on first access using shared connection."
+                )
+                return False  # Return False to trigger lazy creation fallback
+
+            # Auto-detect database type
+            db_type = self._detect_database_type()
+
+            # CRITICAL: Skip sync DDL for MongoDB (document database - no SQL DDL)
+            # MongoDB is schemaless and doesn't use CREATE TABLE statements.
+            # Collections are created automatically on first document insert.
+            if db_type == "mongodb":
+                logger.debug(
+                    f"Skipping sync DDL for MongoDB '{model_name}'. "
+                    f"MongoDB is schemaless - collections are created on first insert."
+                )
+                return True  # Return True - no DDL action needed for MongoDB
+
+            # Generate CREATE TABLE SQL for this model
+            table_sql = self._generate_create_table_sql(model_name, db_type)
+
+            # Create SyncDDLExecutor
+            executor = SyncDDLExecutor(database_url)
+
+            # Execute CREATE TABLE
+            result = executor.execute_ddl(table_sql)
+
+            if result.get("success"):
+                logger.info(
+                    f"Sync DDL: Created table for model '{model_name}' successfully"
+                )
+
+                # Also create indexes if any
+                indexes = self._generate_indexes_sql(model_name, db_type)
+                for index_sql in indexes:
+                    idx_result = executor.execute_ddl(index_sql)
+                    if not idx_result.get("success"):
+                        logger.warning(
+                            f"Failed to create index for '{model_name}': {idx_result.get('error')}"
+                        )
+
+                # Mark as ensured in cache
+                schema_checksum = None
+                model_info = self._models.get(model_name)
+                if model_info and self._schema_cache.enable_schema_validation:
+                    schema_checksum = self._calculate_schema_checksum(
+                        model_info["fields"]
+                    )
+                self._schema_cache.mark_table_ensured(
+                    model_name, database_url, schema_checksum
+                )
+
+                return True
+            else:
+                # Check if it's "table already exists" - that's OK
+                error = result.get("error", "")
+                if "already exists" in error.lower():
+                    logger.debug(f"Table for model '{model_name}' already exists (OK)")
+                    # Mark as ensured in cache
+                    self._schema_cache.mark_table_ensured(
+                        model_name, database_url, None
+                    )
+                    return True
+
+                logger.warning(f"Sync DDL failed for model '{model_name}': {error}")
+                return False
+
+        except ImportError as e:
+            # psycopg2 not installed - fall back to deferred creation
+            logger.warning(
+                f"SyncDDLExecutor not available ({e}). "
+                f"Table for '{model_name}' will be created on first access."
+            )
+            return False
+
+        except Exception as e:
+            logger.warning(
+                f"Sync table creation failed for '{model_name}': {e}. "
+                f"Table will be created on first access."
+            )
+            return False
+
+    def create_tables_sync(self, database_type: str = None):
+        """Create database tables for all registered models using synchronous DDL.
+
+        This method uses SyncDDLExecutor which works in ANY context:
+        - CLI scripts (no event loop)
+        - FastAPI/Docker (event loop running) - CRITICAL FIX!
+        - pytest (both sync and async)
+
+        No event loop involvement - uses psycopg2/sqlite3 synchronous drivers.
+
+        This is the recommended method for Docker/FastAPI deployments where
+        event loop boundary issues make async table creation problematic.
+
+        Args:
+            database_type: Target database type ('postgresql', 'mysql', 'sqlite').
+                          If None, auto-detected from URL.
+
+        Returns:
+            bool: True if all tables were created successfully
+        """
+        try:
+            from ..migrations.sync_ddl_executor import SyncDDLExecutor
+
+            # Get database URL
+            database_url = self.config.database.url
+            if not database_url:
+                logger.warning(
+                    "No database URL configured, skipping sync table creation"
+                )
+                return False
+
+            # CRITICAL: In-memory SQLite databases cannot use sync DDL
+            # SyncDDLExecutor creates a separate connection, so tables would be
+            # in a different in-memory database than CRUD operations.
+            if database_url == ":memory:" or database_url == "sqlite:///:memory:":
+                logger.warning(
+                    "create_tables_sync() does not support in-memory databases. "
+                    "Use await db.create_tables_async() instead for :memory: databases."
+                )
+                return False
+
+            # Auto-detect database type if not provided
+            if database_type is None:
+                database_type = self._detect_database_type()
+
+            # CRITICAL: MongoDB doesn't use SQL DDL - collections are created on first insert
+            if database_type == "mongodb":
+                logger.info(
+                    "create_tables_sync() not needed for MongoDB. "
+                    "MongoDB is schemaless - collections are created automatically on first insert."
+                )
+                return True  # Return True - no action needed
+
+            # Generate complete schema SQL
+            schema_sql = self.generate_complete_schema_sql(database_type)
+
+            logger.info(
+                f"Creating database schema for {len(self._models)} models using sync DDL"
+            )
+
+            # Create SyncDDLExecutor
+            executor = SyncDDLExecutor(database_url)
+
+            # Collect all DDL statements
+            all_statements = []
+            all_statements.extend(schema_sql.get("tables", []))
+            all_statements.extend(schema_sql.get("indexes", []))
+            all_statements.extend(schema_sql.get("foreign_keys", []))
+
+            # Execute all DDL statements
+            success_count = 0
+            for statement in all_statements:
+                if statement.strip():
+                    result = executor.execute_ddl(statement)
+                    if result.get("success"):
+                        success_count += 1
+                        logger.debug(f"Sync DDL executed: {statement[:60]}...")
+                    else:
+                        error = result.get("error", "")
+                        # "already exists" is OK
+                        if "already exists" in error.lower():
+                            success_count += 1
+                            logger.debug(
+                                f"Table/index already exists (OK): {statement[:60]}..."
+                            )
+                        else:
+                            logger.warning(f"Sync DDL failed: {error}")
+
+            logger.info(
+                f"Sync DDL: Successfully executed {success_count}/{len(all_statements)} statements"
+            )
+
+            # Mark all models as ensured in cache
+            for model_name in self._models:
+                self._schema_cache.mark_table_ensured(model_name, database_url, None)
+
+            return True
+
+        except ImportError as e:
+            logger.error(
+                f"SyncDDLExecutor not available: {e}. "
+                f"Install psycopg2-binary for PostgreSQL sync DDL support."
+            )
+            return False
+
+        except Exception as e:
+            logger.error(f"Sync table creation failed: {e}")
+            return False
 
     def _register_specialized_nodes(self):
         """Register DataFlow specialized nodes."""
@@ -7143,10 +7414,23 @@ class DataFlow:
                 await db.close_async()  # Proper async cleanup
 
         This method safely closes:
+        - Cached AsyncSQLDatabaseNode instances (awaited)
         - Connection pool manager pools (awaited)
         - Connection manager connections
         - Persistent :memory: connections (awaited)
         """
+        # Clean up cached AsyncSQLDatabaseNode instances (Express API uses these)
+        if hasattr(self, "_async_sql_node_cache") and self._async_sql_node_cache:
+            for db_type, (node, _) in list(self._async_sql_node_cache.items()):
+                try:
+                    if hasattr(node, "close") and callable(node.close):
+                        await node.close()
+                    elif hasattr(node, "_pool_manager") and node._pool_manager:
+                        await node._pool_manager.close_all_pools()
+                except Exception as e:
+                    logger.warning(f"Error closing cached SQL node for {db_type}: {e}")
+            self._async_sql_node_cache.clear()
+
         # Clean up pool manager (if enabled)
         if hasattr(self, "_pool_manager") and self._pool_manager:
             try:

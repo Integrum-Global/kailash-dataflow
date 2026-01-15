@@ -68,9 +68,10 @@ def _execute_workflow_safe(workflow: WorkflowBuilder) -> Tuple[Dict[str, Any], s
     results = {}
     run_id = f"sync_ddl_{id(workflow)}"
 
-    for node in built_workflow.nodes:
+    # FIX: built_workflow.nodes is a dict, not a list - iterate over values
+    for node in built_workflow.nodes.values():
         node_id = node.node_id
-        params = node.parameters
+        params = node.config  # FIX: NodeInstance uses .config, not .parameters
 
         # Extract connection string and query from node parameters
         connection_string = params.get("connection_string", "")
