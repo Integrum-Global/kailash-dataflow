@@ -4,7 +4,7 @@ Critical Safety Scenario Tests for TODO-137 Column Removal Dependency Analysis
 
 Tests the most dangerous column removal scenarios to validate that the system
 PREVENTS DATA LOSS by blocking critical operations. These tests validate the
-core safety requirements identified in the ultrathink-analyst risk assessment.
+core safety requirements identified in the deep-analyst risk assessment.
 
 CRITICAL SAFETY REQUIREMENTS TESTED:
 1. Foreign Key Target Column Removal (MUST be blocked)
@@ -33,6 +33,8 @@ from typing import Any, Dict, List
 
 import asyncpg
 import pytest
+from kailash.runtime.local import LocalRuntime
+
 from dataflow.migrations.column_removal_manager import (
     BackupStrategy,
     ColumnRemovalManager,
@@ -52,8 +54,6 @@ from dataflow.migrations.impact_reporter import (
     RecommendationType,
 )
 from dataflow.migrations.migration_connection_manager import MigrationConnectionManager
-
-from kailash.runtime.local import LocalRuntime
 
 # Import test infrastructure
 from tests.infrastructure.test_harness import IntegrationTestSuite

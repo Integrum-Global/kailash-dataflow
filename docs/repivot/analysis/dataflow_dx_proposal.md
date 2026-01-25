@@ -430,6 +430,6 @@ print(node_info.usage_example)    # Code example
 
 ---
 
-**Prepared by**: Claude Code + Ultrathink Analyst
+**Prepared by**: Claude Code + Deep Analysis
 **Date**: 2025-10-29
 **Status**: AWAITING YOUR APPROVAL
