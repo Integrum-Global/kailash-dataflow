@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kailash-dataflow"
-version = "0.10.15"
+version = "0.10.17"
 description = "Workflow-native database framework for Kailash SDK"
 readme = "README.md"
-license = { text = "Apache-2.0 WITH Additional-Terms" }
+license = { text = "Apache-2.0" }
 authors = [
-    { name = "Integrum", email = "info@integrum.com" }
+    { name = "Integrum", email = "info@integrum.global" }
 ]
 requires-python = ">=3.11"
 classifiers = [
@@ -23,7 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "kailash>=0.10.13",
+    "kailash>=0.10.17",
     "sqlalchemy>=2.0.0",
     "alembic>=1.12.0",
     "asyncpg>=0.28.0",  # PostgreSQL async driver

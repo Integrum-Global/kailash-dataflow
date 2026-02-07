@@ -16,8 +16,7 @@ class BulkOperations:
     def __init__(self, dataflow_instance):
         self.dataflow = dataflow_instance
 
-    @staticmethod
-    def _serialize_params_for_sql(params: list) -> list:
+    def _serialize_params_for_sql(self, params: list, model_name: str) -> list:
         """Serialize dict/list parameters to JSON for SQL binding.
 
         BUG #515 FIX: This method ensures dict/list values are serialized
@@ -25,16 +24,40 @@ class BulkOperations:
         validation. This preserves type integrity through validation while
         ensuring database compatibility.
 
+        NATIVE ARRAY FIX: Only JSON-serialize lists when use_native_arrays=False.
+        When use_native_arrays=True (PostgreSQL), lists are passed through as-is
+        for native array columns (TEXT[], INTEGER[], etc.). asyncpg expects
+        Python lists for PostgreSQL array types, not JSON strings.
+
         Args:
             params: List of parameter values
+            model_name: Name of the model to check config
 
         Returns:
-            List with dict/list values serialized to JSON strings
+            List with appropriate serialization based on model config
         """
+        # Check if this model uses native PostgreSQL arrays
+        use_native_arrays = False
+        try:
+            model_info = self.dataflow.get_model_info(model_name)
+            if model_info:
+                config = model_info.get("config", {})
+                use_native_arrays = config.get("use_native_arrays", False)
+        except Exception:
+            pass  # Default to JSON serialization on any error
+
         serialized = []
         for value in params:
-            if isinstance(value, (dict, list)):
+            if isinstance(value, dict):
+                # Dicts are always JSON-serialized (JSONB columns)
                 serialized.append(json.dumps(value))
+            elif isinstance(value, list):
+                if use_native_arrays:
+                    # Native arrays: pass list as-is for asyncpg
+                    serialized.append(value)
+                else:
+                    # JSON mode: serialize list to JSON string
+                    serialized.append(json.dumps(value))
             else:
                 serialized.append(value)
         return serialized
@@ -320,7 +343,10 @@ class BulkOperations:
                     values_placeholders.append(f"({placeholders})")
                     record_params = [record.get(col) for col in columns]
                     # BUG #515 FIX: Serialize dict/list for SQL parameter binding
-                    record_params = self._serialize_params_for_sql(record_params)
+                    # NATIVE ARRAY FIX: Pass model_name to check use_native_arrays config
+                    record_params = self._serialize_params_for_sql(
+                        record_params, model_name
+                    )
                     params.extend(record_params)
 
                 values_clause = ", ".join(values_placeholders)
@@ -469,11 +495,12 @@ class BulkOperations:
                         set_parts.append(f"{field} = %s")
                     else:  # sqlite
                         set_parts.append(f"{field} = ?")
-                    # BUG #515 FIX: Serialize dict/list for SQL parameter binding
-                    if isinstance(value, (dict, list)):
-                        params.append(json.dumps(value))
-                    else:
-                        params.append(value)
+                    # BUG #515 FIX + NATIVE ARRAY FIX: Use _serialize_params_for_sql
+                    # This respects use_native_arrays config for PostgreSQL TEXT[] etc.
+                    serialized_value = self._serialize_params_for_sql(
+                        [value], model_name
+                    )[0]
+                    params.append(serialized_value)
 
                 set_clause = "SET " + ", ".join(set_parts)
 
@@ -939,17 +966,17 @@ class BulkOperations:
                 if database_type.lower() == "postgresql":
                     # PostgreSQL: INSERT ... ON CONFLICT (id) DO UPDATE SET ...
                     query, params = self._build_postgresql_upsert(
-                        table_name, columns, batch, conflict_resolution
+                        table_name, columns, batch, conflict_resolution, model_name
                     )
                 elif database_type.lower() == "mysql":
                     # MySQL: INSERT ... ON DUPLICATE KEY UPDATE ...
                     query, params = self._build_mysql_upsert(
-                        table_name, columns, batch, conflict_resolution
+                        table_name, columns, batch, conflict_resolution, model_name
                     )
                 else:  # sqlite
                     # SQLite: INSERT ... ON CONFLICT (id) DO UPDATE SET ...
                     query, params = self._build_sqlite_upsert(
-                        table_name, columns, batch, conflict_resolution
+                        table_name, columns, batch, conflict_resolution, model_name
                     )
 
                 logger.warning(
@@ -1019,6 +1046,7 @@ class BulkOperations:
         columns: List[str],
         batch: List[Dict[str, Any]],
         conflict_resolution: str,
+        model_name: str,
     ) -> tuple:
         """Build PostgreSQL upsert query with ON CONFLICT clause."""
         column_names = ", ".join(columns)
@@ -1031,7 +1059,10 @@ class BulkOperations:
                 [f"${j + 1}" for j in range(len(params), len(params) + len(columns))]
             )
             values_placeholders.append(f"({placeholders})")
-            params.extend([record.get(col) for col in columns])
+            # NATIVE ARRAY FIX: Use _serialize_params_for_sql to respect use_native_arrays
+            record_params = [record.get(col) for col in columns]
+            record_params = self._serialize_params_for_sql(record_params, model_name)
+            params.extend(record_params)
 
         values_clause = ", ".join(values_placeholders)
 
@@ -1067,6 +1098,7 @@ class BulkOperations:
         columns: List[str],
         batch: List[Dict[str, Any]],
         conflict_resolution: str,
+        model_name: str,
     ) -> tuple:
         """Build MySQL upsert query with ON DUPLICATE KEY UPDATE clause."""
         column_names = ", ".join(columns)
@@ -1077,7 +1109,10 @@ class BulkOperations:
         for record in batch:
             placeholders = ", ".join(["%s"] * len(columns))
             values_placeholders.append(f"({placeholders})")
-            params.extend([record.get(col) for col in columns])
+            # NATIVE ARRAY FIX: Use _serialize_params_for_sql to respect use_native_arrays
+            record_params = [record.get(col) for col in columns]
+            record_params = self._serialize_params_for_sql(record_params, model_name)
+            params.extend(record_params)
 
         values_clause = ", ".join(values_placeholders)
 
@@ -1105,6 +1140,7 @@ class BulkOperations:
         columns: List[str],
         batch: List[Dict[str, Any]],
         conflict_resolution: str,
+        model_name: str,
     ) -> tuple:
         """Build SQLite upsert query with ON CONFLICT clause."""
         column_names = ", ".join(columns)
@@ -1115,7 +1151,10 @@ class BulkOperations:
         for record in batch:
             placeholders = ", ".join(["?"] * len(columns))
             values_placeholders.append(f"({placeholders})")
-            params.extend([record.get(col) for col in columns])
+            # NATIVE ARRAY FIX: Use _serialize_params_for_sql to respect use_native_arrays
+            record_params = [record.get(col) for col in columns]
+            record_params = self._serialize_params_for_sql(record_params, model_name)
+            params.extend(record_params)
 
         values_clause = ", ".join(values_placeholders)
 

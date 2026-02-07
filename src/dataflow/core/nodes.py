@@ -258,8 +258,7 @@ class NodeGenerator:
         test_context = self._test_context
 
         class DataFlowNode(AsyncNode):
-            @staticmethod
-            def _serialize_params_for_sql(params: list) -> list:
+            def _serialize_params_for_sql(self, params: list) -> list:
                 """Serialize dict/list parameters to JSON for SQL binding.
 
                 BUG #515 FIX: This method ensures dict/list values are serialized
@@ -267,18 +266,41 @@ class NodeGenerator:
                 validation. This preserves type integrity through validation while
                 ensuring database compatibility.
 
+                NATIVE ARRAY FIX: Only JSON-serialize lists when use_native_arrays=False.
+                When use_native_arrays=True (PostgreSQL), lists are passed through as-is
+                for native array columns (TEXT[], INTEGER[], etc.). asyncpg expects
+                Python lists for PostgreSQL array types, not JSON strings.
+
                 Args:
                     params: List of parameter values
 
                 Returns:
-                    List with dict/list values serialized to JSON strings
+                    List with appropriate serialization based on model config
                 """
                 import json
 
+                # Check if this model uses native PostgreSQL arrays
+                use_native_arrays = False
+                try:
+                    model_info = self.dataflow_instance.get_model_info(self.model_name)
+                    if model_info:
+                        config = model_info.get("config", {})
+                        use_native_arrays = config.get("use_native_arrays", False)
+                except Exception:
+                    pass  # Default to JSON serialization on any error
+
                 serialized = []
                 for value in params:
-                    if isinstance(value, (dict, list)):
+                    if isinstance(value, dict):
+                        # Dicts are always JSON-serialized (JSONB columns)
                         serialized.append(json.dumps(value))
+                    elif isinstance(value, list):
+                        if use_native_arrays:
+                            # Native arrays: pass list as-is for asyncpg
+                            serialized.append(value)
+                        else:
+                            # JSON mode: serialize list to JSON string
+                            serialized.append(json.dumps(value))
                     else:
                         serialized.append(value)
                 return serialized
