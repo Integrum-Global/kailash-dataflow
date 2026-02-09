@@ -11,10 +11,12 @@ Tests the health monitoring system for DataFlow including:
 Following TDD methodology: Tests written BEFORE implementation.
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+
 from dataflow.platform.health import (
     HealthCheck,
     HealthMonitor,
@@ -34,13 +36,22 @@ class TestHealthChecks:
         # Arrange
         monitor = HealthMonitor(memory_dataflow)
 
-        # Act
-        result = await monitor._check_database()
+        # Mock get_connection to simulate successful database connection
+        mock_conn = AsyncMock()
+        mock_conn.fetch = AsyncMock(return_value=[(1,)])
 
-        # Assert
-        assert result["status"] == HealthStatus.HEALTHY
-        assert "healthy" in result["message"].lower()
-        assert "error" not in result
+        @asynccontextmanager
+        async def mock_get_connection():
+            yield mock_conn
+
+        with patch.object(memory_dataflow, "get_connection", mock_get_connection):
+            # Act
+            result = await monitor._check_database()
+
+            # Assert
+            assert result["status"] == HealthStatus.HEALTHY
+            assert "healthy" in result["message"].lower()
+            assert "error" not in result
 
     async def test_database_health_check_unhealthy(self, memory_dataflow):
         """Test database health check detects connection failures."""
@@ -118,6 +129,8 @@ class TestHealthChecks:
 
         memory_dataflow._pool_manager = mock_pool_manager
         memory_dataflow.enable_connection_pooling = True
+        # Add connection_url attribute for pool metrics lookup
+        memory_dataflow.connection_url = "postgresql://test@localhost/test"
 
         # Act
         result = await monitor._check_connection_pool()
@@ -142,6 +155,8 @@ class TestHealthChecks:
 
         memory_dataflow._pool_manager = mock_pool_manager
         memory_dataflow.enable_connection_pooling = True
+        # Add connection_url attribute for pool metrics lookup
+        memory_dataflow.connection_url = "postgresql://test@localhost/test"
 
         # Act
         result = await monitor._check_connection_pool()

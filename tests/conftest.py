@@ -26,10 +26,10 @@ os.environ["DATAFLOW_TEST_MODE"] = "true"
 os.environ["DATAFLOW_POOL_SIZE"] = "1"
 os.environ["DATAFLOW_MAX_OVERFLOW"] = "1"
 
-from dataflow import DataFlow, DataFlowConfig
-
 from kailash.runtime.local import LocalRuntime
 from kailash.workflow.builder import WorkflowBuilder
+
+from dataflow import DataFlow, DataFlowConfig
 
 
 @pytest.fixture(scope="function")
@@ -640,20 +640,58 @@ def pytest_collection_modifyitems(config, items):
 
 # TDD Infrastructure Fixtures
 @pytest.fixture(scope="function", autouse=True)
-async def tdd_infrastructure():
-    """Initialize TDD infrastructure for the test session if enabled."""
+def tdd_infrastructure():
+    """Initialize TDD infrastructure for the test session if enabled.
+
+    Note: This is a sync fixture. TDD infrastructure setup requires PostgreSQL
+    on port 5434 and is only used when DATAFLOW_TDD_MODE=true AND the database
+    is reachable. If either condition is not met, the fixture is a no-op.
+    """
+    from dataflow.testing.tdd_support import is_tdd_mode
+
+    if not is_tdd_mode():
+        yield
+        return
+
+    # TDD mode is on - try to set up infrastructure, but gracefully skip
+    # if PostgreSQL is not available (some test files set TDD_MODE at module level)
+    import asyncio
+    import socket
+
     from dataflow.testing.tdd_support import (
         setup_tdd_infrastructure,
         teardown_tdd_infrastructure,
     )
 
-    # Setup TDD infrastructure
-    await setup_tdd_infrastructure()
+    # Quick check if PostgreSQL is reachable before attempting async connection
+    tdd_db_available = False
+    try:
+        sock = socket.create_connection(("localhost", 5434), timeout=1)
+        sock.close()
+        tdd_db_available = True
+    except (ConnectionRefusedError, OSError, socket.timeout):
+        pass
+
+    if not tdd_db_available:
+        yield
+        return
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(setup_tdd_infrastructure())
+    except Exception:
+        # Infrastructure setup failed - continue without TDD
+        yield
+        return
 
     yield
 
-    # Cleanup TDD infrastructure
-    await teardown_tdd_infrastructure()
+    try:
+        loop.run_until_complete(teardown_tdd_infrastructure())
+    except Exception:
+        pass
+    finally:
+        loop.close()
 
 
 @pytest.fixture

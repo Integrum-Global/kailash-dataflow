@@ -9,6 +9,7 @@ import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+
 from dataflow.core.config import DatabaseConfig, DataFlowConfig
 from dataflow.migrations.auto_migration_system import AutoMigrationSystem
 from dataflow.migrations.concurrent_access_manager import MigrationLockManager
@@ -221,6 +222,7 @@ class TestConnectionAdapterInjection:
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.environment = "test"
 
         migration_system = AutoMigrationSystem(
@@ -230,7 +232,8 @@ class TestConnectionAdapterInjection:
 
         # Connection adapter should be initialized with the DataFlow instance
         assert migration_system._connection_adapter.dataflow == mock_dataflow
-        assert migration_system._connection_adapter._parameter_style == "postgresql"
+        # Parameter style is auto-detected from database type (sqlite in this case)
+        assert migration_system._connection_adapter._parameter_style == "sqlite"
 
     def test_sqlite_connection_adapter(self):
         """Test ConnectionManagerAdapter works with SQLite."""
@@ -238,6 +241,7 @@ class TestConnectionAdapterInjection:
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///test.db"
         )
+        mock_dataflow.config.database.url = "sqlite:///test.db"
         mock_dataflow.config.environment = "test"
 
         migration_system = AutoMigrationSystem(
@@ -247,9 +251,8 @@ class TestConnectionAdapterInjection:
         # Should detect SQLite and create appropriate adapter
         assert migration_system._connection_adapter.dataflow == mock_dataflow
         assert migration_system._connection_adapter._database_type == "sqlite"
-        assert (
-            migration_system._connection_adapter._parameter_style == "postgresql"
-        )  # Default style
+        # Parameter style is auto-detected from database type
+        assert migration_system._connection_adapter._parameter_style == "sqlite"
 
     def test_lock_timeout_configuration(self):
         """Test that lock timeout can be configured."""

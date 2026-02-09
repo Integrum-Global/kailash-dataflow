@@ -11,7 +11,6 @@ This file provides fixtures specifically for Tier 1 (unit) tests:
 - ❌ NO PostgreSQL connections (use integration tests instead)
 """
 
-import asyncio
 from typing import AsyncGenerator
 
 import pytest
@@ -22,17 +21,6 @@ from tests.fixtures.unit_test_harness import (
     UnitTestDatabaseConfig,
     UnitTestSuite,
 )
-
-
-# Configure asyncio event loop for async tests
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    yield loop
-    loop.close()
-
 
 # Standard unit test suite fixtures
 

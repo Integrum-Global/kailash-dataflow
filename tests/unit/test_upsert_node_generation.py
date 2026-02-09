@@ -190,11 +190,11 @@ class TestUpsertNodeGeneration:
                 f"Available nodes: {list(db._nodes.keys())}"
             )
 
-        # Count user-related nodes (should be 10)
+        # Count user-related nodes (should be 11: 7 CRUD + 4 Bulk)
         user_nodes = [name for name in db._nodes.keys() if name.startswith("User")]
         assert (
-            len(user_nodes) == 10
-        ), f"Should have exactly 10 nodes per model, got {len(user_nodes)}: {user_nodes}"
+            len(user_nodes) == 11
+        ), f"Should have exactly 11 nodes per model (7 CRUD + 4 Bulk), got {len(user_nodes)}: {user_nodes}"
 
     def test_upsert_node_operation_attribute(self):
         """Verify UpsertNode has correct operation attribute."""

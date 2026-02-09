@@ -442,10 +442,10 @@ class TestTableRenameAnalyzer:
     @pytest.mark.asyncio
     async def test_performance_with_large_schema(self):
         """Test performance characteristics with large number of objects."""
-        # Generate mock data for large schema
-        large_schema_objects = []
+        # Generate mock data for large schema - views
+        large_view_objects = []
         for i in range(100):
-            large_schema_objects.append(
+            large_view_objects.append(
                 {
                     "viewname": f"view_{i}",
                     "definition": f"SELECT * FROM users WHERE id = {i}",
@@ -453,7 +453,21 @@ class TestTableRenameAnalyzer:
                 }
             )
 
-        self.mock_connection.fetch.return_value = large_schema_objects
+        # Mock needs to return different data for different queries:
+        # 1. find_foreign_key_references (incoming FK) - need constraint_name
+        # 2. find_outgoing_foreign_key_references (outgoing FK) - need constraint_name
+        # 3. find_view_dependencies - viewname, definition, schemaname
+        # 4. find_index_dependencies - indexname, tablename, indexdef
+        # 5. find_trigger_dependencies - trigger_name, etc.
+        fetch_side_effects = [
+            [],  # Incoming foreign keys (empty)
+            [],  # Outgoing foreign keys (empty)
+            large_view_objects,  # Views
+            [],  # Indexes (empty)
+            [],  # Triggers (empty)
+        ]
+
+        self.mock_connection.fetch.side_effect = fetch_side_effects
         self.mock_connection_manager.get_connection = AsyncMock(
             return_value=self.mock_connection
         )

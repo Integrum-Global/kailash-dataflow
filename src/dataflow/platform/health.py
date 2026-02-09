@@ -42,11 +42,24 @@ class HealthCheck:
 
     def to_json(self) -> str:
         """Serialize health check to JSON format."""
+
+        def serialize_details(details: Dict[str, Any]) -> Dict[str, Any]:
+            """Recursively serialize details, converting HealthStatus enums."""
+            result = {}
+            for key, value in details.items():
+                if isinstance(value, dict):
+                    result[key] = serialize_details(value)
+                elif isinstance(value, HealthStatus):
+                    result[key] = value.value
+                else:
+                    result[key] = value
+            return result
+
         return json.dumps(
             {
                 "status": self.status.value,
                 "message": self.message,
-                "details": self.details,
+                "details": serialize_details(self.details),
                 "timestamp": self.timestamp.isoformat(),
             }
         )
@@ -242,10 +255,17 @@ class HealthMonitor:
                     "message": "Connection pool not initialized",
                 }
 
-            # Get pool metrics
-            metrics = self.dataflow._pool_manager.get_pool_metrics(
-                self.dataflow.database_url
+            # Get pool metrics - use connection_url or database_config.url
+            db_url = getattr(
+                self.dataflow,
+                "connection_url",
+                getattr(
+                    getattr(self.dataflow, "database_config", None),
+                    "url",
+                    None,
+                ),
             )
+            metrics = self.dataflow._pool_manager.get_pool_metrics(db_url)
 
             utilization = metrics.get("utilization", 0)
 

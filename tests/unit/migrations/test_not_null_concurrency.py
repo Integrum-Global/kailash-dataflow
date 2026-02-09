@@ -16,6 +16,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+
 from dataflow.migrations.default_strategies import DefaultValueStrategyManager
 from dataflow.migrations.not_null_handler import (
     AdditionResult,
@@ -87,11 +88,17 @@ class TestConcurrentOperations:
             )
 
             plan1 = NotNullAdditionPlan(
-                table_name="test_table", column=column1, execution_strategy="single_ddl"
+                table_name="test_table",
+                column=column1,
+                execution_strategy="single_ddl",
+                validate_constraints=False,
             )
 
             plan2 = NotNullAdditionPlan(
-                table_name="test_table", column=column2, execution_strategy="single_ddl"
+                table_name="test_table",
+                column=column2,
+                execution_strategy="single_ddl",
+                validate_constraints=False,
             )
 
             # Execute concurrently
@@ -262,6 +269,7 @@ class TestRaceConditions:
                 column=column,
                 execution_strategy="batched_update",
                 batch_size=1000,
+                validate_constraints=False,
             )
 
             result = await self.handler.execute_not_null_addition(plan)
@@ -316,7 +324,10 @@ class TestDeadlockPrevention:
             )
 
             plan = NotNullAdditionPlan(
-                table_name="test_table", column=column, execution_strategy="single_ddl"
+                table_name="test_table",
+                column=column,
+                execution_strategy="single_ddl",
+                validate_constraints=False,
             )
 
             # Execute with potential deadlock scenario
@@ -395,6 +406,8 @@ class TestLockManagement:
             elif "pg_advisory_unlock" in query:
                 advisory_locks_released.append(args[0] if args else None)
                 return True
+            elif "IS NULL" in query:
+                return 0  # No NULL violations for constraint validation
             return 1000
 
         mock_connection.fetchval = mock_fetchval
@@ -439,7 +452,20 @@ class TestLockManagement:
             return None
 
         mock_connection.execute = mock_execute
-        mock_connection.fetchval.return_value = 100000  # Large table
+
+        # Track fetchval calls to break the batched update loop
+        fetchval_call_count = {"count": 0}
+
+        async def mock_fetchval(query, *args):
+            fetchval_call_count["count"] += 1
+            if "WITH batch AS" in query:
+                # Return 1000 for first 2 batches, then None to end loop
+                if fetchval_call_count["count"] <= 2:
+                    return 1000
+                return None  # No more rows to update
+            return 100000  # Large table row count
+
+        mock_connection.fetchval = mock_fetchval
         mock_connection.fetch.return_value = []
 
         with patch.object(
@@ -457,6 +483,7 @@ class TestLockManagement:
                 column=column,
                 execution_strategy="batched_update",
                 batch_size=1000,
+                validate_constraints=False,
             )
 
             # For batched updates, should use appropriate locking strategy
@@ -677,6 +704,8 @@ class TestIsolationLevels:
 
             # Plan with initial row count
             plan = await self.handler.plan_not_null_addition("test_table", column)
+            # Disable constraint validation since we're testing phantom reads, not constraints
+            plan.validate_constraints = False
 
             # Row count changed between planning and execution
             result = await self.handler.execute_not_null_addition(plan)

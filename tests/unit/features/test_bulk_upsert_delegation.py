@@ -11,6 +11,7 @@ Tests the delegation layer without database operations - focuses on:
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from dataflow import DataFlow
 from dataflow.core.config import DatabaseConfig, DataFlowConfig, SecurityConfig
 
@@ -90,397 +91,326 @@ class TestBulkUpsertDelegation:
         # Enable multi-tenant mode
         mock_dataflow.config.security.multi_tenant = True
         mock_dataflow._tenant_context = {"tenant_id": "tenant_123"}
+        mock_dataflow._models = {"User": {"table_name": "test_users"}}
+        mock_dataflow.get_model_fields = MagicMock(return_value={})
 
         bulk_ops = BulkOperations(mock_dataflow)
 
-        # Mock BulkUpsertNode
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={
-                    "success": True,
-                    "rows_affected": 2,
-                    "inserted": 1,
-                    "updated": 1,
-                    "duplicates_removed": 0,
-                    "performance_metrics": {},
-                }
-            )
-            MockNode.return_value = mock_node_instance
+        # Mock the internal SQL node that bulk_upsert now uses directly
+        mock_sql_node = AsyncMock()
+        mock_sql_node.async_run = AsyncMock(return_value={"rows_affected": 2})
+        mock_dataflow._get_or_create_async_sql_node = MagicMock(
+            return_value=mock_sql_node
+        )
 
-            await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[
-                    {"email": "test1@example.com", "name": "Test 1"},
-                    {"email": "test2@example.com", "name": "Test 2"},
-                ],
-                conflict_resolution="update",
-            )
+        test_data = [
+            {"id": 1, "email": "test1@example.com", "name": "Test 1"},
+            {"id": 2, "email": "test2@example.com", "name": "Test 2"},
+        ]
 
-            # Verify node was created with tenant context
-            MockNode.assert_called_once()
-            call_kwargs = MockNode.call_args.kwargs
-            assert call_kwargs["multi_tenant"] is True
-            assert call_kwargs["tenant_id"] == "tenant_123"
+        await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=test_data,
+            conflict_resolution="update",
+        )
 
-            # Verify node.async_run was called with tenant_id
-            mock_node_instance.async_run.assert_called_once()
-            run_kwargs = mock_node_instance.async_run.call_args.kwargs
-            assert run_kwargs["tenant_id"] == "tenant_123"
+        # Verify tenant_id was added to each record
+        for record in test_data:
+            assert record.get("tenant_id") == "tenant_123"
+
+        # Verify SQL node was called
+        mock_sql_node.async_run.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_bulk_upsert_delegates_to_node(self, mock_dataflow):
-        """Test that bulk_upsert delegates correctly to BulkUpsertNode."""
+        """Test that bulk_upsert uses SQL node and returns correct result format."""
         from dataflow.features.bulk import BulkOperations
+
+        mock_dataflow._models = {"User": {"table_name": "test_users"}}
+        mock_dataflow.get_model_fields = MagicMock(return_value={})
 
         bulk_ops = BulkOperations(mock_dataflow)
 
-        # Mock BulkUpsertNode
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={
-                    "success": True,
-                    "rows_affected": 5,
-                    "inserted": 3,
-                    "updated": 2,
-                    "duplicates_removed": 1,
-                    "performance_metrics": {
-                        "execution_time_seconds": 0.5,
-                        "records_per_second": 10.0,
-                    },
-                }
-            )
-            MockNode.return_value = mock_node_instance
+        # Mock the internal SQL node that bulk_upsert now uses
+        mock_sql_node = AsyncMock()
+        mock_sql_node.async_run = AsyncMock(return_value={"rows_affected": 5})
+        mock_dataflow._get_or_create_async_sql_node = MagicMock(
+            return_value=mock_sql_node
+        )
 
-            test_data = [
-                {"email": f"user{i}@example.com", "name": f"User {i}"} for i in range(5)
-            ]
+        test_data = [
+            {"id": i, "email": f"user{i}@example.com", "name": f"User {i}"}
+            for i in range(5)
+        ]
 
-            result = await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=test_data,
-                conflict_resolution="update",
-                batch_size=100,
-                conflict_columns=["email"],
-                return_records=False,
-            )
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=test_data,
+            conflict_resolution="update",
+            batch_size=100,
+        )
 
-            # Verify BulkUpsertNode was created with correct parameters
-            MockNode.assert_called_once()
-            call_kwargs = MockNode.call_args.kwargs
-            assert call_kwargs["table_name"] == "test_users"
-            assert call_kwargs["database_type"] == "postgresql"
-            assert call_kwargs["batch_size"] == 100
-            assert call_kwargs["merge_strategy"] == "update"
-            assert call_kwargs["conflict_columns"] == ["email"]
-            assert "connection_string" in call_kwargs
+        # Verify SQL node was called with correct database type
+        mock_dataflow._get_or_create_async_sql_node.assert_called_once_with(
+            "postgresql"
+        )
 
-            # Verify async_run was called with data
-            mock_node_instance.async_run.assert_called_once()
-            run_kwargs = mock_node_instance.async_run.call_args.kwargs
-            assert run_kwargs["data"] == test_data
-            assert run_kwargs["return_records"] is False
+        # Verify SQL node execution was called
+        mock_sql_node.async_run.assert_called_once()
 
-            # Verify result transformation
-            assert result["success"] is True
-            assert result["records_processed"] == 5
-            assert result["inserted"] == 3
-            assert result["updated"] == 2
+        # Verify result format
+        assert result["success"] is True
+        assert result["batch_size"] == 100
+        assert result["conflict_resolution"] == "update"
+        assert "records_processed" in result
+        assert "inserted" in result
+        assert "updated" in result
 
     @pytest.mark.asyncio
     async def test_bulk_upsert_conflict_resolution_mapping(self, mock_dataflow):
-        """Test conflict_resolution parameter mapping (skip->ignore, update->update)."""
+        """Test conflict_resolution parameter validation (update, skip, ignore)."""
         from dataflow.features.bulk import BulkOperations
+
+        mock_dataflow._models = {"User": {"table_name": "test_users"}}
+        mock_dataflow.get_model_fields = MagicMock(return_value={})
 
         bulk_ops = BulkOperations(mock_dataflow)
 
-        # Mock BulkUpsertNode
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={
-                    "success": True,
-                    "rows_affected": 1,
-                    "inserted": 0,
-                    "updated": 0,
-                    "duplicates_removed": 0,
-                    "performance_metrics": {},
-                }
-            )
-            MockNode.return_value = mock_node_instance
+        # Mock the internal SQL node
+        mock_sql_node = AsyncMock()
+        mock_sql_node.async_run = AsyncMock(return_value={"rows_affected": 1})
+        mock_dataflow._get_or_create_async_sql_node = MagicMock(
+            return_value=mock_sql_node
+        )
 
-            # Test 'skip' -> 'ignore' mapping
-            await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[{"email": "test@example.com", "name": "Test"}],
-                conflict_resolution="skip",
-            )
+        test_data = [{"id": 1, "email": "test@example.com", "name": "Test"}]
 
-            call_kwargs = MockNode.call_args.kwargs
-            assert call_kwargs["merge_strategy"] == "ignore"
+        # Test 'skip' is accepted
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=test_data.copy(),
+            conflict_resolution="skip",
+        )
+        assert result["success"] is True
+        assert result["conflict_resolution"] == "skip"
 
-            # Reset mock
-            MockNode.reset_mock()
-            mock_node_instance.async_run.reset_mock()
+        # Test 'update' is accepted
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=test_data.copy(),
+            conflict_resolution="update",
+        )
+        assert result["success"] is True
+        assert result["conflict_resolution"] == "update"
 
-            # Test 'update' -> 'update' mapping
-            await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[{"email": "test@example.com", "name": "Test"}],
-                conflict_resolution="update",
-            )
+        # Test 'ignore' is accepted
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=test_data.copy(),
+            conflict_resolution="ignore",
+        )
+        assert result["success"] is True
+        assert result["conflict_resolution"] == "ignore"
 
-            call_kwargs = MockNode.call_args.kwargs
-            assert call_kwargs["merge_strategy"] == "update"
+        # Test invalid conflict_resolution returns error
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=test_data.copy(),
+            conflict_resolution="invalid",
+        )
+        assert result["success"] is False
+        assert "Invalid conflict_resolution" in result["error"]
 
     @pytest.mark.asyncio
     async def test_bulk_upsert_response_format_matches_api(self, mock_dataflow):
         """Test that response format matches expected BulkOperations API."""
         from dataflow.features.bulk import BulkOperations
 
+        mock_dataflow._models = {"User": {"table_name": "test_users"}}
+        mock_dataflow.get_model_fields = MagicMock(return_value={})
+
         bulk_ops = BulkOperations(mock_dataflow)
 
-        # Mock BulkUpsertNode with complete response
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={
-                    "success": True,
-                    "rows_affected": 10,
-                    "inserted": 6,
-                    "updated": 4,
-                    "duplicates_removed": 2,
-                    "upserted_records": [
-                        {"id": 1, "email": "user1@example.com", "name": "User 1"},
-                        {"id": 2, "email": "user2@example.com", "name": "User 2"},
-                    ],
-                    "performance_metrics": {
-                        "execution_time_seconds": 1.5,
-                        "records_per_second": 6.67,
-                        "batch_count": 1,
-                    },
-                }
-            )
-            MockNode.return_value = mock_node_instance
+        # Mock the internal SQL node
+        mock_sql_node = AsyncMock()
+        mock_sql_node.async_run = AsyncMock(return_value={"rows_affected": 10})
+        mock_dataflow._get_or_create_async_sql_node = MagicMock(
+            return_value=mock_sql_node
+        )
 
-            result = await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[
-                    {"email": f"user{i}@example.com", "name": f"User {i}"}
-                    for i in range(10)
-                ],
-                conflict_resolution="update",
-                return_records=True,
-            )
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=[
+                {"id": i, "email": f"user{i}@example.com", "name": f"User {i}"}
+                for i in range(10)
+            ],
+            conflict_resolution="update",
+        )
 
-            # Verify required fields
-            assert "success" in result
-            assert "records_processed" in result
-            assert "inserted" in result
-            assert "updated" in result
-            assert "duplicates_removed" in result
-            assert "conflict_resolution" in result
-            assert "batch_size" in result
-            assert "performance_metrics" in result
+        # Verify required fields
+        assert "success" in result
+        assert "records_processed" in result
+        assert "inserted" in result
+        assert "updated" in result
+        assert "skipped" in result
+        assert "conflict_resolution" in result
+        assert "batch_size" in result
+        assert "batches" in result
 
-            # Verify values
-            assert result["success"] is True
-            assert result["records_processed"] == 10
-            assert result["inserted"] == 6
-            assert result["updated"] == 4
-            assert result["duplicates_removed"] == 2
-            assert result["conflict_resolution"] == "update"
-
-            # Verify optional records field
-            assert "records" in result
-            assert len(result["records"]) == 2
+        # Verify values
+        assert result["success"] is True
+        assert result["conflict_resolution"] == "update"
 
     @pytest.mark.asyncio
     async def test_bulk_upsert_error_handling_returns_proper_format(
         self, mock_dataflow
     ):
-        """Test that errors from BulkUpsertNode are properly formatted."""
+        """Test that errors are properly formatted."""
         from dataflow.features.bulk import BulkOperations
+
+        mock_dataflow._models = {"User": {"table_name": "test_users"}}
+        mock_dataflow.get_model_fields = MagicMock(return_value={})
 
         bulk_ops = BulkOperations(mock_dataflow)
 
-        # Test 1: Node returns error response
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={"success": False, "error": "Database connection failed"}
-            )
-            MockNode.return_value = mock_node_instance
+        # Test 1: Missing 'id' field returns error (validation before SQL execution)
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=[{"email": "test@example.com", "name": "Test"}],  # Missing 'id'
+            conflict_resolution="update",
+        )
 
-            result = await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[{"email": "test@example.com", "name": "Test"}],
-                conflict_resolution="update",
-            )
+        assert result["success"] is False
+        assert "error" in result
+        assert "missing required 'id' field" in result["error"]
 
-            assert result["success"] is False
-            assert "error" in result
-            assert "Database connection failed" in result["error"]
-            assert result["records_processed"] == 0
+        # Test 2: SQL node raises exception
+        mock_sql_node = AsyncMock()
+        mock_sql_node.async_run = AsyncMock(
+            side_effect=Exception("Unexpected database error")
+        )
+        mock_dataflow._get_or_create_async_sql_node = MagicMock(
+            return_value=mock_sql_node
+        )
 
-        # Test 2: Node raises exception
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                side_effect=Exception("Unexpected database error")
-            )
-            MockNode.return_value = mock_node_instance
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=[{"id": 1, "email": "test@example.com", "name": "Test"}],
+            conflict_resolution="update",
+        )
 
-            result = await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[{"email": "test@example.com", "name": "Test"}],
-                conflict_resolution="update",
-            )
-
-            assert result["success"] is False
-            assert "error" in result
-            assert "Unexpected database error" in result["error"]
-            assert result["records_processed"] == 0
+        assert result["success"] is False
+        assert "error" in result
+        assert "Unexpected database error" in result["error"]
+        assert result["records_processed"] == 0
 
     @pytest.mark.asyncio
     async def test_bulk_upsert_optional_parameters_passed_correctly(
         self, mock_dataflow
     ):
-        """Test that optional parameters are passed correctly to BulkUpsertNode."""
+        """Test that optional parameters are handled correctly."""
         from dataflow.features.bulk import BulkOperations
+
+        mock_dataflow._models = {"User": {"table_name": "test_users"}}
+        mock_dataflow.get_model_fields = MagicMock(return_value={})
 
         bulk_ops = BulkOperations(mock_dataflow)
 
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={
-                    "success": True,
-                    "rows_affected": 1,
-                    "inserted": 1,
-                    "updated": 0,
-                    "duplicates_removed": 0,
-                    "performance_metrics": {},
-                }
-            )
-            MockNode.return_value = mock_node_instance
+        # Mock the internal SQL node
+        mock_sql_node = AsyncMock()
+        mock_sql_node.async_run = AsyncMock(return_value={"rows_affected": 1})
+        mock_dataflow._get_or_create_async_sql_node = MagicMock(
+            return_value=mock_sql_node
+        )
 
-            await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[{"email": "test@example.com", "name": "Test"}],
-                conflict_resolution="update",
-                batch_size=500,
-                conflict_columns=["email", "tenant_id"],
-                return_records=True,
-                auto_timestamps=False,
-                version_control=True,
-            )
+        result = await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=[{"id": 1, "email": "test@example.com", "name": "Test"}],
+            conflict_resolution="update",
+            batch_size=500,
+        )
 
-            # Verify all optional parameters were passed
-            call_kwargs = MockNode.call_args.kwargs
-            assert call_kwargs["batch_size"] == 500
-            assert call_kwargs["conflict_columns"] == ["email", "tenant_id"]
-            assert call_kwargs["auto_timestamps"] is False
-            assert call_kwargs["version_control"] is True
+        # Verify result contains the batch_size that was passed
+        assert result["success"] is True
+        assert result["batch_size"] == 500
+        assert result["conflict_resolution"] == "update"
 
-            run_kwargs = mock_node_instance.async_run.call_args.kwargs
-            assert run_kwargs["return_records"] is True
+        # Verify SQL node was called
+        mock_sql_node.async_run.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_bulk_upsert_database_type_detection(self, mock_dataflow):
-        """Test that database type is correctly detected and passed to node."""
+        """Test that database type is correctly detected and used for SQL node."""
         from dataflow.features.bulk import BulkOperations
 
+        mock_dataflow._models = {"User": {"table_name": "test_users"}}
+        mock_dataflow.get_model_fields = MagicMock(return_value={})
+
         bulk_ops = BulkOperations(mock_dataflow)
+
+        # Mock the internal SQL node
+        mock_sql_node = AsyncMock()
+        mock_sql_node.async_run = AsyncMock(return_value={"rows_affected": 1})
+        mock_dataflow._get_or_create_async_sql_node = MagicMock(
+            return_value=mock_sql_node
+        )
+
+        test_data = [{"id": 1, "email": "test@example.com", "name": "Test"}]
 
         # Test PostgreSQL detection
         mock_dataflow._detect_database_type.return_value = "postgresql"
 
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={
-                    "success": True,
-                    "rows_affected": 1,
-                    "inserted": 1,
-                    "updated": 0,
-                    "duplicates_removed": 0,
-                    "performance_metrics": {},
-                }
-            )
-            MockNode.return_value = mock_node_instance
+        await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=test_data.copy(),
+            conflict_resolution="update",
+        )
 
-            await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[{"email": "test@example.com", "name": "Test"}],
-                conflict_resolution="update",
-            )
+        # Verify SQL node was created with postgresql database type
+        mock_dataflow._get_or_create_async_sql_node.assert_called_with("postgresql")
 
-            call_kwargs = MockNode.call_args.kwargs
-            assert call_kwargs["database_type"] == "postgresql"
+        # Reset mock
+        mock_dataflow._get_or_create_async_sql_node.reset_mock()
 
-        # Test with different database type
+        # Test MySQL detection
         mock_dataflow._detect_database_type.return_value = "mysql"
 
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={
-                    "success": True,
-                    "rows_affected": 1,
-                    "inserted": 1,
-                    "updated": 0,
-                    "duplicates_removed": 0,
-                    "performance_metrics": {},
-                }
-            )
-            MockNode.return_value = mock_node_instance
+        await bulk_ops.bulk_upsert(
+            model_name="User",
+            data=test_data.copy(),
+            conflict_resolution="update",
+        )
 
-            await bulk_ops.bulk_upsert(
-                model_name="User",
-                data=[{"email": "test@example.com", "name": "Test"}],
-                conflict_resolution="update",
-            )
-
-            call_kwargs = MockNode.call_args.kwargs
-            assert call_kwargs["database_type"] == "mysql"
+        # Verify SQL node was created with mysql database type
+        mock_dataflow._get_or_create_async_sql_node.assert_called_with("mysql")
 
     @pytest.mark.asyncio
     async def test_bulk_upsert_table_name_conversion(self, mock_dataflow):
         """Test that model name is correctly converted to table name."""
         from dataflow.features.bulk import BulkOperations
 
+        # Model not in _models, so _class_name_to_table_name should be used as fallback
+        mock_dataflow._models = {}
+        mock_dataflow._class_name_to_table_name.return_value = "converted_table_name"
+        mock_dataflow.get_model_fields = MagicMock(return_value={})
+
         bulk_ops = BulkOperations(mock_dataflow)
 
-        # Mock table name conversion
-        mock_dataflow._class_name_to_table_name.return_value = "converted_table_name"
+        # Mock the internal SQL node
+        mock_sql_node = AsyncMock()
+        mock_sql_node.async_run = AsyncMock(return_value={"rows_affected": 1})
+        mock_dataflow._get_or_create_async_sql_node = MagicMock(
+            return_value=mock_sql_node
+        )
 
-        with patch("dataflow.nodes.bulk_upsert.BulkUpsertNode") as MockNode:
-            mock_node_instance = AsyncMock()
-            mock_node_instance.async_run = AsyncMock(
-                return_value={
-                    "success": True,
-                    "rows_affected": 1,
-                    "inserted": 1,
-                    "updated": 0,
-                    "duplicates_removed": 0,
-                    "performance_metrics": {},
-                }
-            )
-            MockNode.return_value = mock_node_instance
+        await bulk_ops.bulk_upsert(
+            model_name="SomeModelName",
+            data=[{"id": 1, "email": "test@example.com", "name": "Test"}],
+            conflict_resolution="update",
+        )
 
-            await bulk_ops.bulk_upsert(
-                model_name="SomeModelName",
-                data=[{"email": "test@example.com", "name": "Test"}],
-                conflict_resolution="update",
-            )
+        # Verify _class_name_to_table_name was called as fallback
+        mock_dataflow._class_name_to_table_name.assert_called_once_with("SomeModelName")
 
-            # Verify _class_name_to_table_name was called
-            mock_dataflow._class_name_to_table_name.assert_called_once_with(
-                "SomeModelName"
-            )
-
-            # Verify correct table name was passed to node
-            call_kwargs = MockNode.call_args.kwargs
-            assert call_kwargs["table_name"] == "converted_table_name"
+        # Verify SQL node was called (meaning the table name was used)
+        mock_sql_node.async_run.assert_called_once()

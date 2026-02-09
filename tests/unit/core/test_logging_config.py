@@ -6,6 +6,8 @@ Tests the LoggingConfig dataclass and related utilities for:
 - Environment variable support
 - Category-specific log levels
 - Sensitive value masking
+- Regex-based string masking
+- SensitiveMaskingFilter for log records
 - Integration with suppress_warnings utilities
 """
 
@@ -14,6 +16,478 @@ import os
 from unittest import mock
 
 import pytest
+
+# =============================================================================
+# Tests for NEW logging_config.py module (Phase 7)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestLoggingConfigNew:
+    """Test the new LoggingConfig from logging_config.py."""
+
+    def test_default_values(self):
+        """Default values should be production-ready."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        config = LoggingConfig()
+        assert config.level == logging.WARNING
+        assert config.mask_sensitive is True
+        assert config.mask_replacement == "***MASKED***"
+        assert config.propagate is True
+        assert len(config.mask_patterns) > 0
+
+    def test_custom_level(self):
+        """Custom log levels should be applied."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        config = LoggingConfig(level=logging.DEBUG)
+        assert config.level == logging.DEBUG
+
+    def test_custom_format(self):
+        """Custom format should be applied."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        custom_format = "%(message)s"
+        config = LoggingConfig(format=custom_format)
+        assert config.format == custom_format
+
+    def test_from_env_with_level(self):
+        """from_env should read DATAFLOW_LOG_LEVEL."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        with mock.patch.dict(os.environ, {"DATAFLOW_LOG_LEVEL": "DEBUG"}):
+            config = LoggingConfig.from_env()
+            assert config.level == logging.DEBUG
+
+    def test_from_env_with_mask_sensitive_true(self):
+        """from_env should read DATAFLOW_LOG_MASK_SENSITIVE=true."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        with mock.patch.dict(os.environ, {"DATAFLOW_LOG_MASK_SENSITIVE": "true"}):
+            config = LoggingConfig.from_env()
+            assert config.mask_sensitive is True
+
+    def test_from_env_with_mask_sensitive_false(self):
+        """from_env should read DATAFLOW_LOG_MASK_SENSITIVE=false."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        with mock.patch.dict(os.environ, {"DATAFLOW_LOG_MASK_SENSITIVE": "false"}):
+            config = LoggingConfig.from_env()
+            assert config.mask_sensitive is False
+
+    def test_from_env_with_custom_patterns(self):
+        """from_env should read DATAFLOW_LOG_MASK_PATTERNS."""
+        from dataflow.core.logging_config import (
+            DEFAULT_SENSITIVE_PATTERNS,
+            LoggingConfig,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"DATAFLOW_LOG_MASK_PATTERNS": "custom_secret=([^\\s]+),my_key=([^\\s]+)"},
+        ):
+            config = LoggingConfig.from_env()
+            # Should have default patterns plus custom ones
+            assert len(config.mask_patterns) > len(DEFAULT_SENSITIVE_PATTERNS)
+            assert "custom_secret=([^\\s]+)" in config.mask_patterns
+
+    def test_from_env_with_format(self):
+        """from_env should read DATAFLOW_LOG_FORMAT."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        custom_format = "%(levelname)s: %(message)s"
+        with mock.patch.dict(os.environ, {"DATAFLOW_LOG_FORMAT": custom_format}):
+            config = LoggingConfig.from_env()
+            assert config.format == custom_format
+
+    def test_from_env_invalid_level_uses_default(self):
+        """from_env should use default for invalid level names."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        with mock.patch.dict(os.environ, {"DATAFLOW_LOG_LEVEL": "INVALID_LEVEL"}):
+            config = LoggingConfig.from_env()
+            assert config.level == logging.WARNING
+
+    def test_from_env_with_custom_prefix(self):
+        """from_env should support custom prefix."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        with mock.patch.dict(os.environ, {"MYAPP_LOG_LEVEL": "ERROR"}):
+            config = LoggingConfig.from_env(prefix="MYAPP")
+            assert config.level == logging.ERROR
+
+    def test_production_preset(self):
+        """production() should return WARNING level config."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        config = LoggingConfig.production()
+        assert config.level == logging.WARNING
+        assert config.mask_sensitive is True
+
+    def test_development_preset(self):
+        """development() should return DEBUG level config."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        config = LoggingConfig.development()
+        assert config.level == logging.DEBUG
+        assert config.mask_sensitive is True
+
+    def test_quiet_preset(self):
+        """quiet() should return ERROR level config."""
+        from dataflow.core.logging_config import LoggingConfig
+
+        config = LoggingConfig.quiet()
+        assert config.level == logging.ERROR
+        assert config.mask_sensitive is True
+
+
+@pytest.mark.unit
+class TestMaskSensitiveValues:
+    """Test the mask_sensitive_values function for string masking."""
+
+    def test_mask_postgresql_url(self):
+        """Should mask password in PostgreSQL URL."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        url = "postgresql://user:secretpassword@localhost:5432/db"
+        masked = mask_sensitive_values(url)
+        assert "secretpassword" not in masked
+        assert "***MASKED***" in masked
+        assert "user:" in masked
+
+    def test_mask_mysql_url(self):
+        """Should mask password in MySQL URL."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        url = "mysql://root:rootpass@127.0.0.1:3306/mydb"
+        masked = mask_sensitive_values(url)
+        assert "rootpass" not in masked
+        assert "***MASKED***" in masked
+
+    def test_mask_password_param(self):
+        """Should mask password parameter."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        message = "Connecting with password=supersecret123"
+        masked = mask_sensitive_values(message)
+        assert "supersecret123" not in masked
+        assert "***MASKED***" in masked
+
+    def test_mask_api_key(self):
+        """Should mask API key."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        message = "Using api_key=sk-12345abcde"
+        masked = mask_sensitive_values(message)
+        assert "sk-12345abcde" not in masked
+        assert "***MASKED***" in masked
+
+    def test_mask_bearer_token(self):
+        """Should mask bearer token."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        message = "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        masked = mask_sensitive_values(message)
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in masked
+        assert "***MASKED***" in masked
+
+    def test_mask_aws_access_key(self):
+        """Should mask AWS access key ID."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        message = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
+        masked = mask_sensitive_values(message)
+        assert "AKIAIOSFODNN7EXAMPLE" not in masked
+        assert "***MASKED***" in masked
+
+    def test_mask_aws_secret_key(self):
+        """Should mask AWS secret access key."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        message = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        masked = mask_sensitive_values(message)
+        assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in masked
+        assert "***MASKED***" in masked
+
+    def test_no_sensitive_data_unchanged(self):
+        """Should not modify messages without sensitive data."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        message = "This is a normal log message with no secrets"
+        masked = mask_sensitive_values(message)
+        assert masked == message
+
+    def test_custom_patterns(self):
+        """Should support custom masking patterns."""
+        from dataflow.core.logging_config import LoggingConfig, mask_sensitive_values
+
+        config = LoggingConfig(
+            mask_patterns=["my_custom_secret=([^\\s]+)"],
+            mask_sensitive=True,
+        )
+        message = "my_custom_secret=verysecret123"
+        masked = mask_sensitive_values(message, config)
+        assert "verysecret123" not in masked
+        assert "***MASKED***" in masked
+
+    def test_empty_message(self):
+        """Should handle empty message."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        assert mask_sensitive_values("") == ""
+        assert mask_sensitive_values(None) is None
+
+    def test_multiple_patterns_in_same_message(self):
+        """Should mask multiple sensitive values in same message."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        message = "Connection: password=secret1 api_key=key123 token=tok456"
+        masked = mask_sensitive_values(message)
+        assert "secret1" not in masked
+        assert "key123" not in masked
+        assert "tok456" not in masked
+        # All should be masked
+        assert masked.count("***MASKED***") >= 3
+
+    def test_mask_disabled(self):
+        """Should not mask when mask_sensitive is False."""
+        from dataflow.core.logging_config import LoggingConfig, mask_sensitive_values
+
+        config = LoggingConfig(mask_sensitive=False)
+        message = "password=secret123"
+        masked = mask_sensitive_values(message, config)
+        assert masked == message
+
+    def test_custom_replacement(self):
+        """Should use custom replacement string."""
+        from dataflow.core.logging_config import LoggingConfig, mask_sensitive_values
+
+        config = LoggingConfig(mask_replacement="[REDACTED]")
+        message = "password=secret123"
+        masked = mask_sensitive_values(message, config)
+        assert "[REDACTED]" in masked
+        assert "***MASKED***" not in masked
+
+
+@pytest.mark.unit
+class TestSensitiveMaskingFilter:
+    """Test the SensitiveMaskingFilter logging filter."""
+
+    def test_filter_masks_message(self):
+        """Filter should mask sensitive values in log message."""
+        from dataflow.core.logging_config import LoggingConfig, SensitiveMaskingFilter
+
+        config = LoggingConfig()
+        log_filter = SensitiveMaskingFilter(config)
+
+        # Create a log record with sensitive data
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="Connecting to postgresql://user:password@localhost/db",
+            args=(),
+            exc_info=None,
+        )
+
+        # Apply filter
+        result = log_filter.filter(record)
+
+        # Filter should return True (pass the record)
+        assert result is True
+        # Message should be masked
+        assert "password" not in record.msg
+        assert "***MASKED***" in record.msg
+
+    def test_filter_preserves_non_sensitive(self):
+        """Filter should not modify non-sensitive messages."""
+        from dataflow.core.logging_config import SensitiveMaskingFilter
+
+        log_filter = SensitiveMaskingFilter()
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="This is a normal log message",
+            args=(),
+            exc_info=None,
+        )
+
+        original_msg = record.msg
+        log_filter.filter(record)
+
+        assert record.msg == original_msg
+
+    def test_filter_handles_non_string_messages(self):
+        """Filter should handle non-string messages gracefully."""
+        from dataflow.core.logging_config import SensitiveMaskingFilter
+
+        log_filter = SensitiveMaskingFilter()
+
+        # Create record with non-string msg (integer)
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg=12345,  # Non-string
+            args=(),
+            exc_info=None,
+        )
+
+        # Should not raise exception
+        result = log_filter.filter(record)
+        assert result is True
+        assert record.msg == 12345
+
+    def test_filter_custom_replacement(self):
+        """Filter should use custom replacement from config."""
+        from dataflow.core.logging_config import LoggingConfig, SensitiveMaskingFilter
+
+        config = LoggingConfig(mask_replacement="[HIDDEN]")
+        log_filter = SensitiveMaskingFilter(config)
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="password=secret",
+            args=(),
+            exc_info=None,
+        )
+
+        log_filter.filter(record)
+
+        assert "[HIDDEN]" in record.msg
+        assert "***MASKED***" not in record.msg
+
+    def test_filter_custom_patterns(self):
+        """Filter should use custom patterns from config."""
+        from dataflow.core.logging_config import LoggingConfig, SensitiveMaskingFilter
+
+        config = LoggingConfig(
+            mask_patterns=["custom_field=([^\\s]+)"],
+        )
+        log_filter = SensitiveMaskingFilter(config)
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="custom_field=myvalue123",
+            args=(),
+            exc_info=None,
+        )
+
+        log_filter.filter(record)
+
+        assert "myvalue123" not in record.msg
+        assert "***MASKED***" in record.msg
+
+    def test_filter_with_string_args(self):
+        """Filter should mask sensitive values in string args."""
+        from dataflow.core.logging_config import SensitiveMaskingFilter
+
+        log_filter = SensitiveMaskingFilter()
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="Connection: %s",
+            args=("password=secret123",),
+            exc_info=None,
+        )
+
+        log_filter.filter(record)
+
+        # Args tuple should have masked string
+        assert "secret123" not in record.args[0]
+
+    def test_filter_with_dict_args(self):
+        """Filter should mask sensitive values in dict args."""
+        from dataflow.core.logging_config import SensitiveMaskingFilter
+
+        log_filter = SensitiveMaskingFilter()
+
+        # Create record first, then set dict args (LogRecord doesn't accept dict directly)
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="Data: %(data)s",
+            args=(),
+            exc_info=None,
+        )
+        # Manually set dict args after creation
+        record.args = {"data": "password=secret123"}
+
+        log_filter.filter(record)
+
+        # Dict args should have masked value
+        assert "secret123" not in record.args["data"]
+
+
+@pytest.mark.unit
+class TestDefaultSensitivePatterns:
+    """Test DEFAULT_SENSITIVE_PATTERNS coverage."""
+
+    def test_patterns_exist(self):
+        """DEFAULT_SENSITIVE_PATTERNS should be non-empty list."""
+        from dataflow.core.logging_config import DEFAULT_SENSITIVE_PATTERNS
+
+        assert isinstance(DEFAULT_SENSITIVE_PATTERNS, list)
+        assert len(DEFAULT_SENSITIVE_PATTERNS) > 10  # Should have many patterns
+
+    def test_patterns_are_valid_regex(self):
+        """All default patterns should be valid regex."""
+        import re
+
+        from dataflow.core.logging_config import DEFAULT_SENSITIVE_PATTERNS
+
+        for pattern in DEFAULT_SENSITIVE_PATTERNS:
+            # Should not raise
+            compiled = re.compile(pattern, re.IGNORECASE)
+            assert compiled is not None
+
+    def test_database_url_patterns(self):
+        """Patterns should cover common database URL formats."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        urls = [
+            "postgresql://user:pass@host/db",
+            "postgres://admin:secret@localhost/mydb",
+            "mysql://root:password@127.0.0.1/test",
+            "mariadb://user:pwd@host:3306/db",
+        ]
+
+        for url in urls:
+            masked = mask_sensitive_values(url)
+            assert "***MASKED***" in masked, f"Pattern not matched for: {url}"
+
+    def test_aws_credential_patterns(self):
+        """Patterns should cover AWS credential formats."""
+        from dataflow.core.logging_config import mask_sensitive_values
+
+        # AWS Access Key ID format
+        assert "***MASKED***" in mask_sensitive_values("AKIAIOSFODNN7EXAMPLE")
+        # AWS Secret with env var format
+        assert "***MASKED***" in mask_sensitive_values(
+            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI"
+        )
+
+
+# =============================================================================
+# Tests for EXISTING config.py LoggingConfig (backward compatibility)
+# =============================================================================
 
 
 @pytest.mark.unit
@@ -429,6 +903,33 @@ class TestLoggingConfigExport:
 
         assert is_logging_configured is not None
         assert callable(is_logging_configured)
+
+    def test_mask_sensitive_values_importable_from_dataflow(self):
+        """mask_sensitive_values should be importable from dataflow package."""
+        from dataflow import mask_sensitive_values
+
+        assert mask_sensitive_values is not None
+        assert callable(mask_sensitive_values)
+        # Verify it works
+        result = mask_sensitive_values("password=secret")
+        assert "secret" not in result
+
+    def test_sensitive_masking_filter_importable_from_dataflow(self):
+        """SensitiveMaskingFilter should be importable from dataflow package."""
+        from dataflow import SensitiveMaskingFilter
+
+        assert SensitiveMaskingFilter is not None
+        # Verify it can be instantiated
+        filter_instance = SensitiveMaskingFilter()
+        assert filter_instance is not None
+
+    def test_default_sensitive_patterns_importable_from_dataflow(self):
+        """DEFAULT_SENSITIVE_PATTERNS should be importable from dataflow package."""
+        from dataflow import DEFAULT_SENSITIVE_PATTERNS
+
+        assert DEFAULT_SENSITIVE_PATTERNS is not None
+        assert isinstance(DEFAULT_SENSITIVE_PATTERNS, list)
+        assert len(DEFAULT_SENSITIVE_PATTERNS) > 0
 
 
 @pytest.mark.unit

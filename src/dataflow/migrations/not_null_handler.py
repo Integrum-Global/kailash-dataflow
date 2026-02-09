@@ -10,6 +10,7 @@ in production databases.
 """
 
 import asyncio
+import hashlib
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -391,6 +392,12 @@ class NotNullColumnHandler:
         self.connection_manager = connection_manager
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
+        # Advisory lock configuration for concurrent operation coordination
+        self._use_advisory_locks = False
+
+        # Savepoint configuration for batch recovery (not implemented yet)
+        self._use_savepoints = False
+
         # Initialize strategies
         self.strategies = {
             DefaultValueType.STATIC: StaticDefaultStrategy(),
@@ -571,6 +578,27 @@ class NotNullColumnHandler:
             issues.append(f"Validation error: {str(e)}")
             return ValidationResult(is_safe=False, issues=issues, warnings=warnings)
 
+    def _generate_advisory_lock_key(self, table_name: str) -> int:
+        """
+        Generate a consistent advisory lock key from the table name.
+
+        Uses MD5 hash to create a stable integer key for PostgreSQL advisory locks.
+
+        Args:
+            table_name: Name of the table to generate lock key for
+
+        Returns:
+            Integer lock key suitable for pg_try_advisory_lock
+        """
+        # Use MD5 hash and take first 8 bytes as a signed 64-bit integer
+        hash_bytes = hashlib.md5(table_name.encode()).digest()[:8]
+        # Convert to signed integer (PostgreSQL advisory locks use bigint)
+        lock_key = int.from_bytes(hash_bytes, byteorder="big", signed=False)
+        # Ensure it fits in PostgreSQL bigint range (signed 64-bit)
+        if lock_key > 2**63 - 1:
+            lock_key = lock_key - 2**64
+        return lock_key
+
     async def execute_not_null_addition(
         self, plan: NotNullAdditionPlan, connection: Optional[asyncpg.Connection] = None
     ) -> AdditionExecutionResult:
@@ -592,7 +620,25 @@ class NotNullColumnHandler:
         if connection is None:
             connection = await self._get_connection()
 
+        # Advisory lock management for concurrent operation coordination
+        lock_key = None
+        lock_acquired = False
+
         try:
+            # Acquire advisory lock if enabled
+            if self._use_advisory_locks:
+                lock_key = self._generate_advisory_lock_key(plan.table_name)
+                self.logger.debug(
+                    f"Acquiring advisory lock {lock_key} for table {plan.table_name}"
+                )
+                lock_acquired = await connection.fetchval(
+                    "SELECT pg_try_advisory_lock($1)", lock_key
+                )
+                if not lock_acquired:
+                    self.logger.warning(
+                        f"Could not acquire advisory lock {lock_key} for table {plan.table_name}"
+                    )
+
             # Start transaction for rollback capability
             async with connection.transaction():
                 # Execute based on strategy
@@ -639,6 +685,19 @@ class NotNullColumnHandler:
                 error_message=str(e),
                 constraint_violations=[str(e)],
             )
+
+        finally:
+            # Always release advisory lock if acquired
+            if self._use_advisory_locks and lock_key is not None:
+                try:
+                    self.logger.debug(
+                        f"Releasing advisory lock {lock_key} for table {plan.table_name}"
+                    )
+                    await connection.fetchval("SELECT pg_advisory_unlock($1)", lock_key)
+                except Exception as unlock_error:
+                    self.logger.warning(
+                        f"Failed to release advisory lock {lock_key}: {unlock_error}"
+                    )
 
     async def rollback_not_null_addition(
         self, plan: NotNullAdditionPlan, connection: Optional[asyncpg.Connection] = None

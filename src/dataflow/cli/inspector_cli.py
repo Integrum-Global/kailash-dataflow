@@ -97,11 +97,10 @@ def cmd_connections(inspector: Inspector, args: argparse.Namespace) -> None:
     for conn in connections:
         status = "✓" if conn.is_valid else "✗"
         print(
-            f"  {status} {conn.source_node}.{conn.source_param} → {conn.target_node}.{conn.target_param}"
+            f"  {status} {conn.source_node}.{conn.source_parameter} → {conn.target_node}.{conn.target_parameter}"
         )
-        if conn.validation_issues:
-            for issue in conn.validation_issues:
-                print(f"      Issue: {issue}")
+        if conn.validation_message:
+            print(f"      Issue: {conn.validation_message}")
 
 
 def cmd_connection_chain(inspector: Inspector, args: argparse.Namespace) -> None:
@@ -121,7 +120,7 @@ def cmd_connection_chain(inspector: Inspector, args: argparse.Namespace) -> None
     print(f"Connection chain ({len(chain)} steps):")
     for i, conn in enumerate(chain, 1):
         print(
-            f"  {i}. {conn.source_node}.{conn.source_param} → {conn.target_node}.{conn.target_param}"
+            f"  {i}. {conn.source_node}.{conn.source_parameter} → {conn.target_node}.{conn.target_parameter}"
         )
 
 
@@ -178,7 +177,7 @@ def cmd_trace_parameter(inspector: Inspector, args: argparse.Namespace) -> None:
     try:
         trace = inspector.trace_parameter(args.node_id, args.parameter)
         print(f"Parameter Trace for '{args.parameter}' in '{args.node_id}':")
-        print(f"  Source: {trace.source_node}.{trace.source_param}")
+        print(f"  Source: {trace.source_node}.{trace.source_parameter}")
         print(f"  Destination: {trace.destination_node}.{trace.destination_param}")
         if trace.transformations:
             print(f"  Transformations ({len(trace.transformations)}):")
@@ -208,7 +207,7 @@ def cmd_parameter_flow(inspector: Inspector, args: argparse.Namespace) -> None:
     print(f"Parameter Flow ({len(flows)} path(s)):")
     for i, flow in enumerate(flows, 1):
         print(
-            f"  {i}. {flow.source_node}.{flow.source_param} → {flow.destination_node}.{flow.destination_param}"
+            f"  {i}. {flow.source_node}.{flow.source_parameter} → {flow.destination_node}.{flow.destination_param}"
         )
 
 

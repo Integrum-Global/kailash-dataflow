@@ -399,7 +399,12 @@ class ModelRegistry:
                 f"<callable:{obj.__name__ if hasattr(obj, '__name__') else str(obj)}>"
             )
         else:
-            return obj
+            # Handle SQLAlchemy MetaData and other non-serializable objects
+            try:
+                json.dumps(obj)
+                return obj
+            except (TypeError, ValueError):
+                return f"<{type(obj).__name__}>"
 
     def _generate_unified_checksum(self, content: Dict[str, Any]) -> str:
         """Generate checksum for model definition."""

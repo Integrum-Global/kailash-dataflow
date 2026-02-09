@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
 from dataflow.exceptions import EnhancedDataFlowError
 from dataflow.exceptions import ErrorSolution as ExceptionErrorSolution
 
@@ -32,7 +33,6 @@ def create_test_error(
     context=None,
     causes=None,
     solutions=None,
-    severity="error",
 ):
     """Create EnhancedDataFlowError for testing."""
     return EnhancedDataFlowError(
@@ -41,7 +41,6 @@ def create_test_error(
         context=context or {},
         causes=causes or [],
         solutions=solutions or [],
-        severity=severity,
         docs_url="https://docs.dataflow.dev",
     )
 
@@ -136,9 +135,10 @@ def test_debug_agent_default_model():
 # Test 5: DebugAgent - Extends KaizenNode
 def test_debug_agent_extends_kaizen_node():
     """Test DebugAgent extends Kaizen KaizenNode (BaseAgent)."""
+    from kaizen.nodes.base import KaizenNode
+
     from dataflow.debug.agent import DebugAgent
     from dataflow.debug.data_structures import KnowledgeBase
-    from kaizen.nodes.base import KaizenNode
 
     error_enhancer = Mock()
     inspector = Mock()
@@ -293,25 +293,23 @@ def test_error_analysis_engine_extract_causes_and_solutions():
 
 # Test 10: ErrorAnalysisEngine - Extract Severity
 def test_error_analysis_engine_extract_severity():
-    """Test ErrorAnalysisEngine extracts severity."""
+    """Test ErrorAnalysisEngine extracts severity (all errors default to 'error')."""
     from dataflow.debug.error_analysis_engine import ErrorAnalysisEngine
 
     error_enhancer = Mock()
     engine = ErrorAnalysisEngine(error_enhancer)
 
-    # Test error severity
-    error = create_test_error(
-        error_code="DF-101", message="Missing parameter", severity="error"
-    )
+    # Test error severity (all DataFlow errors default to "error")
+    error = create_test_error(error_code="DF-101", message="Missing parameter")
     analysis = engine.analyze_error(error)
     assert analysis.severity == "error"
 
-    # Test warning severity
-    warning = create_test_error(
-        error_code="DF-901", message="Validation warning", severity="warning"
+    # Validation errors also default to "error" severity
+    validation_error = create_test_error(
+        error_code="DF-901", message="Validation error"
     )
-    warning_analysis = engine.analyze_error(warning)
-    assert warning_analysis.severity == "warning"
+    validation_analysis = engine.analyze_error(validation_error)
+    assert validation_analysis.severity == "error"
 
 
 # Test 11: DebugAgent - diagnose_error() Creates ErrorAnalysis

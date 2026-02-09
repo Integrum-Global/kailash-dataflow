@@ -35,10 +35,18 @@ from .configuration import (
 )
 from .core.config import DataFlowConfig, LoggingConfig, mask_sensitive
 from .core.engine import DataFlow
+from .core.logging_config import DEFAULT_SENSITIVE_PATTERNS
+from .core.logging_config import LoggingConfig as AdvancedLoggingConfig
+from .core.logging_config import SensitiveMaskingFilter, mask_sensitive_values
 from .core.model_registry import ModelRegistry
 from .core.models import DataFlowModel
+from .core.tenant_context import TenantContextSwitch, TenantInfo, get_current_tenant_id
+from .core.type_processor import TypeAwareFieldProcessor
+from .core.workflow_binding import DataFlowWorkflowBinder
 from .utils.suppress_warnings import (
     configure_dataflow_logging,
+    dataflow_logging_context,
+    get_dataflow_logger,
     is_logging_configured,
     restore_dataflow_logging,
     suppress_core_sdk_warnings,
@@ -48,7 +56,7 @@ from .utils.suppress_warnings import (
 suppress_core_sdk_warnings()
 
 # Legacy compatibility - maintain the original imports
-__version__ = "0.10.17"
+__version__ = "0.11.0"
 
 __all__ = [
     "DataFlow",
@@ -67,6 +75,22 @@ __all__ = [
     "is_logging_configured",
     "restore_dataflow_logging",
     "mask_sensitive",
+    # Phase 7: Centralized Logging Configuration
+    "mask_sensitive_values",
+    "SensitiveMaskingFilter",
+    "DEFAULT_SENSITIVE_PATTERNS",
+    "AdvancedLoggingConfig",  # Phase 7C: Regex-based masking config
+    # Phase 7B: Logging Utilities
+    "get_dataflow_logger",
+    "dataflow_logging_context",
+    # TODO-153: Type-Aware Field Processor
+    "TypeAwareFieldProcessor",
+    # TODO-154: Workflow Binding Integration
+    "DataFlowWorkflowBinder",
+    # TODO-155: Context Switching Capabilities
+    "TenantContextSwitch",
+    "TenantInfo",
+    "get_current_tenant_id",
 ]
 
 # Backward compatibility note:

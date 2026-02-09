@@ -9,6 +9,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+
 from dataflow.migration.data_validation_engine import (
     ColumnStatistics,
     DataSample,
@@ -54,9 +55,15 @@ class TestDataValidationEngine:
     @pytest.mark.asyncio
     async def test_validate_type_conversion_success(self, engine, mock_runtime_results):
         """Test successful type conversion validation."""
-        with patch.object(
-            engine.runtime, "execute", return_value=(mock_runtime_results, "run_id")
-        ):
+        # The engine creates its own LocalRuntime internally, so we need to patch
+        # the LocalRuntime class to intercept the execute call
+        with patch(
+            "dataflow.migration.data_validation_engine.LocalRuntime"
+        ) as mock_runtime_class:
+            mock_runtime = Mock()
+            mock_runtime.execute.return_value = (mock_runtime_results, "run_id")
+            mock_runtime_class.return_value = mock_runtime
+
             result = await engine.validate_type_conversion(
                 "users", "age", "varchar(10)", "integer"
             )
@@ -87,9 +94,15 @@ class TestDataValidationEngine:
     @pytest.mark.asyncio
     async def test_count_incompatible_data(self, engine, mock_runtime_results):
         """Test counting incompatible data rows."""
-        with patch.object(
-            engine.runtime, "execute", return_value=(mock_runtime_results, "run_id")
-        ):
+        # The engine creates its own LocalRuntime internally, so we need to patch
+        # the LocalRuntime class to intercept the execute call
+        with patch(
+            "dataflow.migration.data_validation_engine.LocalRuntime"
+        ) as mock_runtime_class:
+            mock_runtime = Mock()
+            mock_runtime.execute.return_value = (mock_runtime_results, "run_id")
+            mock_runtime_class.return_value = mock_runtime
+
             count = await engine.count_incompatible_data(
                 "users", "age", "varchar(10)", "integer"
             )
@@ -111,9 +124,15 @@ class TestDataValidationEngine:
     @pytest.mark.asyncio
     async def test_analyze_column_data(self, engine, mock_runtime_results):
         """Test column data analysis."""
-        with patch.object(
-            engine.runtime, "execute", return_value=(mock_runtime_results, "run_id")
-        ):
+        # The engine creates its own LocalRuntime internally, so we need to patch
+        # the LocalRuntime class to intercept the execute call
+        with patch(
+            "dataflow.migration.data_validation_engine.LocalRuntime"
+        ) as mock_runtime_class:
+            mock_runtime = Mock()
+            mock_runtime.execute.return_value = (mock_runtime_results, "run_id")
+            mock_runtime_class.return_value = mock_runtime
+
             stats = await engine._analyze_column_data("users", "name")
 
             assert isinstance(stats, ColumnStatistics)

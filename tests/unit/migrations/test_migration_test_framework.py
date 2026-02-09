@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+
 from dataflow.migrations.auto_migration_system import (
     ColumnDefinition,
     Migration,
@@ -71,7 +72,7 @@ class TestMigrationTestFramework:
             connection = await framework.setup_test_database()
 
             assert connection is not None
-            mock_connect.assert_called_once_with(":memory:")
+            mock_connect.assert_called_once_with(":memory:", check_same_thread=False)
 
     @pytest.mark.asyncio
     async def test_setup_test_database_postgresql_mock(self):

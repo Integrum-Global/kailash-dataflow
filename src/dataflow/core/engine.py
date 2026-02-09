@@ -41,6 +41,7 @@ from .connection_pool import (
     get_max_overflow_from_env,
     get_pool_size_from_env,
 )
+from .logging_config import mask_sensitive_values  # Phase 7: Sensitive value masking
 from .nodes import NodeGenerator
 from .schema_cache import create_schema_cache  # ADR-001: Schema cache integration
 
@@ -407,16 +408,18 @@ class DataFlow:
         if self._test_mode:
             if test_mode is None:
                 if self._global_test_mode is not None:
-                    logger.info("DataFlow: Test mode enabled (global setting)")
+                    logger.warning("DataFlow: Test mode enabled (global setting)")
                 else:
-                    logger.info(
+                    logger.warning(
                         "DataFlow: Test mode enabled (auto-detected pytest environment)"
                     )
             else:
-                logger.info("DataFlow: Test mode enabled (explicitly set)")
+                logger.warning("DataFlow: Test mode enabled (explicitly set)")
 
             if self._test_mode_aggressive_cleanup:
-                logger.debug("DataFlow: Aggressive pool cleanup enabled for test mode")
+                logger.warning(
+                    "DataFlow: Aggressive pool cleanup enabled for test mode"
+                )
 
         # Register specialized DataFlow nodes
         self._register_specialized_nodes()
@@ -427,6 +430,16 @@ class DataFlow:
         self._transaction_manager = TransactionManager(self)
         self._connection_manager = ConnectionManager(self)
         self._express_dataflow = ExpressDataFlow(self)
+
+        # Initialize workflow binder (TODO-154: Workflow Binding Integration)
+        from .workflow_binding import DataFlowWorkflowBinder
+
+        self._workflow_binder = DataFlowWorkflowBinder(self)
+
+        # Initialize tenant context switching (TODO-155: Context Switching Capabilities)
+        from .tenant_context import TenantContextSwitch
+
+        self._tenant_context_switch = TenantContextSwitch(self)
 
         # Initialize connection pool manager (Phase 2 Component 2)
         self._pool_manager = None
@@ -453,7 +466,7 @@ class DataFlow:
                 enable_pool_pre_ping=True,
                 pool_overrides=pools,
             )
-            logger.info(
+            logger.debug(
                 f"Connection pooling enabled: pool_size={final_pool_size}, "
                 f"max_overflow={final_max_overflow}"
             )
@@ -504,7 +517,7 @@ class DataFlow:
             max_failure_count=self.config.migration.migration_max_failures,
             failure_backoff_seconds=self.config.migration.migration_failure_backoff,
         )
-        logger.info(
+        logger.debug(
             f"Schema cache initialized: enabled={schema_cache_enabled}, "
             f"ttl={self.config.migration.schema_cache_ttl}s, "
             f"max_size={self.config.migration.schema_cache_max_size}"
@@ -537,7 +550,7 @@ class DataFlow:
                 if hasattr(self._migration_system, "_ensure_migration_table"):
                     try:
                         await self._migration_system._ensure_migration_table()
-                        logger.info("Migration table verification completed")
+                        logger.debug("Migration table verification completed")
                     except Exception as e:
                         logger.warning(f"Migration table setup encountered issue: {e}")
                         # Don't fail initialization for migration table issues in existing_schema_mode
@@ -549,7 +562,7 @@ class DataFlow:
                 try:
                     # Schema state manager initialization (if needed)
                     # In existing_schema_mode, this should be very fast
-                    logger.info("Schema state manager verified")
+                    logger.debug("Schema state manager verified")
                 except Exception as e:
                     logger.warning(f"Schema state manager issue: {e}")
                     # Don't fail initialization for schema state issues in existing_schema_mode
@@ -565,7 +578,7 @@ class DataFlow:
             # until initialize() is called, which is always in a proper async context.
             await self._process_pending_relationship_detection()
 
-            logger.info("DataFlow initialization completed successfully")
+            logger.debug("DataFlow initialization completed successfully")
             return True
 
         except Exception as e:
@@ -687,11 +700,11 @@ class DataFlow:
             # Log which backend was selected
             backend_type = cache_manager.__class__.__name__
             if backend_type == "RedisCacheManager":
-                logger.info(
-                    f"Query cache initialized with Redis backend at {redis_url}"
+                logger.debug(
+                    f"Query cache initialized with Redis backend at {mask_sensitive_values(redis_url)}"
                 )
             else:
-                logger.info(
+                logger.debug(
                     f"Query cache initialized with in-memory backend "
                     f"(max_size={cache_max_size}, ttl={cache_ttl}s)"
                 )
@@ -730,7 +743,7 @@ class DataFlow:
                 lock_timeout=self._migration_lock_timeout,
             )
 
-            logger.info(f"Migration system initialized successfully for {dialect}")
+            logger.debug(f"Migration system initialized successfully for {dialect}")
 
         except Exception as e:
             logger.error(f"Failed to initialize migration system: {e}")
@@ -757,7 +770,7 @@ class DataFlow:
                 cache_max_size=cache_max_size,
             )
 
-            logger.info(
+            logger.debug(
                 "PostgreSQL schema state management system initialized successfully"
             )
 
@@ -784,7 +797,7 @@ class DataFlow:
                         f"DataFlow using global TDD test context: {self._test_context.test_id}"
                     )
                 else:
-                    logger.warning("TDD mode enabled but no test context available")
+                    logger.debug("TDD mode enabled but no test context available")
 
             # Configure for TDD performance
             if self._test_context:
@@ -794,12 +807,12 @@ class DataFlow:
                 # Disable expensive operations in TDD mode
                 self._tdd_optimizations_enabled = True
 
-                logger.info(
+                logger.debug(
                     f"DataFlow TDD mode initialized for test {self._test_context.test_id}"
                 )
 
         except ImportError:
-            logger.warning("TDD mode requested but TDD support not available")
+            logger.debug("TDD mode requested but TDD support not available")
             self._tdd_mode = False
         except Exception as e:
             logger.error(f"Failed to initialize TDD mode: {e}")
@@ -1141,7 +1154,7 @@ class DataFlow:
             )
 
             if success:
-                logger.info(
+                logger.debug(
                     f"SQLite table '{table_name}' ready for model '{model_name}'"
                 )
             else:
@@ -1160,7 +1173,7 @@ class DataFlow:
 
         # Handle existing_schema_mode - skip all migration activities
         if self._existing_schema_mode:
-            logger.info(
+            logger.debug(
                 f"existing_schema_mode=True enabled. Skipping PostgreSQL schema management for model '{model_name}'."
             )
             return
@@ -1219,7 +1232,7 @@ class DataFlow:
             # If operations are needed and safe, we should apply them
             # For now, we'll let this fall back to migration system for actual execution
             if operations:
-                logger.info(
+                logger.debug(
                     f"Enhanced schema management detected {len(operations)} operations for '{model_name}', falling back to migration system for execution"
                 )
                 # Raise exception to trigger fallback to migration system
@@ -1234,7 +1247,7 @@ class DataFlow:
                 else:
                     raise Exception(message)
             else:
-                logger.info(
+                logger.debug(
                     f"PostgreSQL enhanced schema management completed for model '{model_name}' - no operations needed"
                 )
         except Exception as e:
@@ -1266,12 +1279,12 @@ class DataFlow:
             )
 
             if success:
-                logger.info(
+                logger.debug(
                     f"PostgreSQL migration executed successfully for model '{model_name}'"
                 )
                 if migrations:
                     for migration in migrations:
-                        logger.info(
+                        logger.debug(
                             f"Applied migration {migration.version} with {len(migration.operations)} operations"
                         )
             else:
@@ -1360,6 +1373,28 @@ class DataFlow:
     def get_model_fields(self, model_name: str) -> Dict[str, Any]:
         """Get field information for a model."""
         return self._model_fields.get(model_name, {})
+
+    def get_type_processor(self, model_name: str):
+        """Get a TypeAwareFieldProcessor for the given model.
+
+        The TypeAwareFieldProcessor validates field values against model type
+        annotations and performs safe type conversions.
+
+        Args:
+            model_name: Name of the model
+
+        Returns:
+            TypeAwareFieldProcessor instance for the model
+
+        Example:
+            >>> processor = db.get_type_processor("User")
+            >>> processor.validate_field("id", "user-123")
+            'user-123'
+        """
+        from dataflow.core.type_processor import TypeAwareFieldProcessor
+
+        fields = self._model_fields.get(model_name, {})
+        return TypeAwareFieldProcessor(fields, model_name)
 
     def get_model_info(self, model_name: str) -> Optional[Dict[str, Any]]:
         """Get comprehensive model information.
@@ -1611,7 +1646,7 @@ class DataFlow:
             # Unregister from global NodeRegistry
             node_names = list(self._nodes.keys())
             NodeRegistry.unregister_nodes(node_names)
-            logger.info(
+            logger.debug(
                 f"Cleaned up {count} nodes from DataFlow instance {self._instance_id}"
             )
 
@@ -1712,7 +1747,7 @@ class DataFlow:
         """
         with cls._global_test_mode_lock:
             cls._global_test_mode = True
-            logger.info("DataFlow: Global test mode enabled")
+            logger.debug("DataFlow: Global test mode enabled")
 
     @classmethod
     def disable_test_mode(cls) -> None:
@@ -1724,7 +1759,9 @@ class DataFlow:
         """
         with cls._global_test_mode_lock:
             cls._global_test_mode = None
-            logger.info("DataFlow: Global test mode disabled (auto-detection restored)")
+            logger.debug(
+                "DataFlow: Global test mode disabled (auto-detection restored)"
+            )
 
     @classmethod
     def is_test_mode_enabled(cls) -> Optional[bool]:
@@ -1767,7 +1804,7 @@ class DataFlow:
             stale_pools_cleaned = cleaned
 
             if self._test_mode:
-                logger.info(
+                logger.debug(
                     f"DataFlow: Cleaned {cleaned} stale connection pools (test mode)"
                 )
         except Exception as e:
@@ -1816,7 +1853,7 @@ class DataFlow:
             cleanup_errors = result["clear_errors"]
 
             if self._test_mode:
-                logger.info(
+                logger.debug(
                     f"DataFlow: Cleared all {pools_cleaned} connection pools "
                     f"(test mode, force={force})"
                 )
@@ -2113,6 +2150,51 @@ class DataFlow:
     def schema_state_manager(self):
         """Access schema state management system (if enabled)."""
         return self._schema_state_manager
+
+    @property
+    def tenant_context(self) -> "TenantContextSwitch":
+        """Access tenant context switching API for multi-tenant operations.
+
+        Provides runtime context switching for multi-tenant applications,
+        allowing safe switching between tenant contexts with guaranteed
+        data isolation.
+
+        Features:
+        - Sync and async context managers for tenant switching
+        - Automatic context restoration on exit (even on exception)
+        - Tenant registration, activation, and deactivation
+        - Statistics tracking for context switches
+
+        Example:
+            # Register tenants
+            db.tenant_context.register_tenant("tenant-a", "Tenant A")
+            db.tenant_context.register_tenant("tenant-b", "Tenant B")
+
+            # Switch context for operations
+            with db.tenant_context.switch("tenant-a"):
+                # All operations here are in tenant-a context
+                user = db.express.create("User", {"name": "Alice"})
+
+            # Async context switching
+            async with db.tenant_context.aswitch("tenant-b"):
+                # Async operations in tenant-b context
+                ...
+
+            # Check current tenant
+            current = db.tenant_context.get_current_tenant()
+
+            # Get statistics
+            stats = db.tenant_context.get_stats()
+
+        Returns:
+            TenantContextSwitch: Tenant context switching interface
+
+        See Also:
+            TODO-155: Context Switching Capabilities
+        """
+        from .tenant_context import TenantContextSwitch
+
+        return self._tenant_context_switch
 
     def _inspect_database_schema(self) -> Dict[str, Any]:
         """Internal method to inspect database schema.
@@ -2439,7 +2521,9 @@ class DataFlow:
             # Add reverse has_many relationships
             self._add_reverse_relationships_real(schema)
 
-            logger.info(f"Real schema discovery completed. Found {len(schema)} tables.")
+            logger.debug(
+                f"Real schema discovery completed. Found {len(schema)} tables."
+            )
             return schema
 
         except Exception as e:
@@ -2568,7 +2652,7 @@ class DataFlow:
             # Add reverse has_many relationships
             self._add_reverse_relationships_real(schema)
 
-            logger.info(
+            logger.debug(
                 f"SQLite schema discovery completed. Found {len(schema)} tables."
             )
             return schema
@@ -2685,7 +2769,7 @@ class DataFlow:
             ConnectionError: When real inspection fails to connect to database
         """
         if use_real_inspection:
-            logger.info("Starting REAL database schema discovery...")
+            logger.debug("Starting REAL database schema discovery...")
             try:
                 import asyncio
 
@@ -2752,12 +2836,12 @@ class DataFlow:
                 "Use discover_schema(use_real_inspection=True) for real database introspection."
             )
 
-        logger.info("Starting mock schema discovery...")
+        logger.debug("Starting mock schema discovery...")
 
         # Use the common mock data generation method
         discovered_schema = self._generate_mock_schema_data()
 
-        logger.info(
+        logger.debug(
             f"Schema discovery completed. Found {len(discovered_schema)} tables."
         )
         return discovered_schema
@@ -2790,7 +2874,7 @@ class DataFlow:
             # schema = db.discover_schema(use_real_inspection=True)  # DON'T DO THIS
         """
         if use_real_inspection:
-            logger.info("Starting REAL async database schema discovery...")
+            logger.debug("Starting REAL async database schema discovery...")
             try:
                 return await self._inspect_database_schema_real()
 
@@ -2944,7 +3028,7 @@ class DataFlow:
                 "Use scaffold(use_real_inspection=True) for models based on real database schema."
             )
 
-        logger.info(f"Generating models to {output_file}...")
+        logger.debug(f"Generating models to {output_file}...")
 
         schema = self.discover_schema(use_real_inspection=use_real_inspection)
 
@@ -3041,7 +3125,7 @@ class DataFlow:
             "tables_processed": len(schema),
         }
 
-        logger.info(
+        logger.debug(
             f"Generated {len(generated_models)} models with {relationships_detected} relationships"
         )
         return result
@@ -3075,7 +3159,7 @@ class DataFlow:
             >>> user_nodes = result['generated_nodes']['User']
             >>> workflow.add_node(user_nodes['create'], "create_user", {...})
         """
-        logger.info("Starting dynamic model registration from schema...")
+        logger.debug("Starting dynamic model registration from schema...")
 
         # Discover schema
         schema = self.discover_schema(use_real_inspection=use_real_inspection)
@@ -3244,7 +3328,7 @@ class DataFlow:
                 generated_nodes[model_name] = self.get_generated_nodes(model_name)
                 registered_models.append(model_name)
 
-                logger.info(
+                logger.debug(
                     f"Successfully registered dynamic model: {model_name} (table: {table_name})"
                 )
 
@@ -3262,7 +3346,7 @@ class DataFlow:
             "error_count": len(errors),
         }
 
-        logger.info(
+        logger.debug(
             f"Dynamic model registration complete: {result['success_count']} models registered, "
             f"{result['error_count']} errors"
         )
@@ -3292,7 +3376,7 @@ class DataFlow:
             >>> user_nodes = result['generated_nodes']['User']
             >>> workflow.add_node(user_nodes['create'], "create_user", {...})
         """
-        logger.info("Starting model reconstruction from registry...")
+        logger.debug("Starting model reconstruction from registry...")
 
         if not self._enable_model_persistence:
             return {
@@ -3412,7 +3496,7 @@ class DataFlow:
                 generated_nodes[model_name] = self.get_generated_nodes(model_name)
                 reconstructed_models.append(model_name)
 
-                logger.info(f"Successfully reconstructed model: {model_name}")
+                logger.debug(f"Successfully reconstructed model: {model_name}")
 
             except Exception as e:
                 error_msg = f"Failed to reconstruct model {model_name}: {str(e)}"
@@ -3428,7 +3512,7 @@ class DataFlow:
             "error_count": len(errors),
         }
 
-        logger.info(
+        logger.debug(
             f"Model reconstruction complete: {result['success_count']} models reconstructed, "
             f"{result['error_count']} errors"
         )
@@ -3858,7 +3942,7 @@ class DataFlow:
 
             # PostgreSQL connection using asyncpg (for proper async support)
             if "postgresql" in database_url or "postgres" in database_url:
-                logger.warning(
+                logger.debug(
                     "_get_database_connection() is sync but PostgreSQL requires async. Use _get_async_database_connection() instead."
                 )
                 return self._get_async_sql_connection()
@@ -4004,7 +4088,7 @@ class DataFlow:
             # Commit transaction
             transaction.commit()
 
-            logger.info(f"DDL executed successfully: {ddl_statement[:100]}...")
+            logger.debug(f"DDL executed successfully: {ddl_statement[:100]}...")
 
         except Exception as e:
             # Rollback transaction on error
@@ -4032,7 +4116,7 @@ class DataFlow:
             # Commit transaction
             transaction.commit()
 
-            logger.info(
+            logger.debug(
                 f"Multi-statement DDL executed successfully: {len(ddl_statements)} statements"
             )
 
@@ -4091,14 +4175,14 @@ class DataFlow:
 
         # Handle existing_schema_mode - skip all migration activities
         if self._existing_schema_mode:
-            logger.info(
+            logger.debug(
                 f"existing_schema_mode=True enabled. Skipping all SQLite schema management for model '{model_name}'."
             )
             return
 
         # Check if auto-migration is enabled
         if not self._auto_migrate:
-            logger.info(
+            logger.debug(
                 f"Auto-migration disabled for SQLite model '{model_name}'. "
                 f"Tables will be created on-demand during first node execution."
             )
@@ -4109,7 +4193,7 @@ class DataFlow:
         if self._migration_system is not None:
             self._trigger_sqlite_migration_system(model_name, fields)
         else:
-            logger.info(
+            logger.debug(
                 f"No migration system available for SQLite model '{model_name}'. "
                 f"Table will be created on-demand during first node execution."
             )
@@ -4182,7 +4266,7 @@ class DataFlow:
                 )
 
                 if success:
-                    logger.info(
+                    logger.debug(
                         f"SQLite table '{table_name}' ready for model '{model_name}'"
                     )
                 else:
@@ -4202,11 +4286,11 @@ class DataFlow:
         success, migrations = async_safe_run(run_sqlite_migration())
 
         if success:
-            logger.info(
+            logger.debug(
                 f"SQLite schema management completed successfully for model '{model_name}'"
             )
         else:
-            logger.info(
+            logger.debug(
                 f"SQLite table creation deferred to first node execution for model '{model_name}'"
             )
 
@@ -4217,7 +4301,7 @@ class DataFlow:
 
         # Handle existing_schema_mode - skip all migration activities
         if self._existing_schema_mode:
-            logger.info(
+            logger.debug(
                 f"existing_schema_mode=True enabled. Skipping all PostgreSQL schema management for model '{model_name}'."
             )
             return
@@ -4235,14 +4319,14 @@ class DataFlow:
 
         # Handle existing_schema_mode validation first - skip all migrations
         if self._existing_schema_mode:
-            logger.info(
+            logger.debug(
                 f"existing_schema_mode=True enabled. Skipping enhanced schema management for model '{model_name}'."
             )
             return
 
         # Check if auto-migration is enabled - skip if disabled
         if not self._auto_migrate:
-            logger.info(
+            logger.debug(
                 f"Auto-migration disabled for model '{model_name}'. "
                 f"Enhanced schema management will not be applied automatically."
             )
@@ -4272,7 +4356,7 @@ class DataFlow:
             )
 
             if len(operations) == 0:
-                logger.info(
+                logger.debug(
                     f"No PostgreSQL schema changes detected for model {model_name}"
                 )
                 return
@@ -4296,7 +4380,7 @@ class DataFlow:
                 else:
                     logger.warning("No PostgreSQL migration execution system available")
             else:
-                logger.info(
+                logger.debug(
                     f"User declined PostgreSQL migration for model {model_name}"
                 )
 
@@ -4306,7 +4390,7 @@ class DataFlow:
             )
             # Fallback to PostgreSQL migration system if available
             if self._migration_system is not None:
-                logger.info("Falling back to PostgreSQL migration system")
+                logger.debug("Falling back to PostgreSQL migration system")
                 self._trigger_postgresql_migration_system(model_name, fields)
             else:
                 raise e
@@ -4383,7 +4467,7 @@ class DataFlow:
 
             # Handle existing_schema_mode validation first
             if self._existing_schema_mode:
-                logger.info(
+                logger.debug(
                     f"Existing schema mode enabled. Validating compatibility for '{model_name}'..."
                 )
 
@@ -4417,14 +4501,14 @@ class DataFlow:
                         raise enhanced
 
                 # Schema is compatible in existing_schema_mode - NEVER run migrations
-                logger.info(
+                logger.debug(
                     f"Schema compatibility validated. existing_schema_mode=True - skipping all migrations for model '{model_name}'."
                 )
                 return
 
             # Check if auto-migration is enabled (for non-existing_schema_mode cases)
             elif not self._auto_migrate:
-                logger.info(
+                logger.debug(
                     f"Auto-migration disabled for model '{model_name}'. "
                     f"Schema changes will not be applied automatically."
                 )
@@ -4453,12 +4537,12 @@ class DataFlow:
             success, migrations = async_safe_run(run_postgresql_migration())
 
             if success:
-                logger.info(
+                logger.debug(
                     f"PostgreSQL migration executed successfully for model {model_name}"
                 )
                 if migrations:
                     for migration in migrations:
-                        logger.info(
+                        logger.debug(
                             f"Applied migration {migration.version} with {len(migration.operations)} operations"
                         )
             else:
@@ -4471,7 +4555,7 @@ class DataFlow:
                 f"PostgreSQL migration system failed for model {model_name}: {e}"
             )
             # Don't raise - allow model registration to continue
-            logger.info(f"Model {model_name} registered without migration")
+            logger.debug(f"Model {model_name} registered without migration")
 
     def _build_incremental_target_schema(
         self, model_name: str, fields: Dict[str, Any]
@@ -4512,7 +4596,7 @@ class DataFlow:
                         name=table_name, columns=columns
                     )
 
-                logger.info(
+                logger.debug(
                     f"Existing schema mode: preserving {len(current_schema)} existing tables"
                 )
                 return current_schema
@@ -4542,7 +4626,7 @@ class DataFlow:
                             )
                             loop.close()
 
-                        logger.info(
+                        logger.debug(
                             f"Existing schema mode: preserving {len(current_schema)} existing tables (via fallback)"
                         )
                         return current_schema
@@ -4598,7 +4682,7 @@ class DataFlow:
                 "columns": self._convert_fields_to_columns(fields)
             }
 
-            logger.info(
+            logger.debug(
                 f"Built incremental model schema with {len(model_schema_tables)} tables"
             )
             return ModelSchema(tables=model_schema_tables)
@@ -4691,17 +4775,17 @@ class DataFlow:
         self, model_name: str, operations, safety_assessment
     ):
         """Show enhanced migration preview with safety assessment."""
-        logger.info(f"\n🔄 Enhanced Migration Preview for {model_name}")
-        logger.info(f"📊 Operations: {len(operations)}")
-        logger.info(f"🛡️ Safety Level: {safety_assessment.overall_risk.value.upper()}")
+        logger.debug(f"\n Enhanced Migration Preview for {model_name}")
+        logger.debug(f"Operations: {len(operations)}")
+        logger.debug(f"Safety Level: {safety_assessment.overall_risk.value.upper()}")
 
         if not safety_assessment.is_safe:
-            logger.warning("⚠️ WARNING: This migration has potential risks!")
+            logger.warning("WARNING: This migration has potential risks!")
             for warning in safety_assessment.warnings:
                 logger.warning(f"   - {warning}")
 
         for i, operation in enumerate(operations, 1):
-            logger.info(f"  {i}. {operation.operation_type} on {operation.table_name}")
+            logger.debug(f"  {i}. {operation.operation_type} on {operation.table_name}")
 
     def _request_enhanced_user_confirmation(
         self, operations, safety_assessment
@@ -4709,7 +4793,7 @@ class DataFlow:
         """Request user confirmation with enhanced risk information."""
         if safety_assessment.is_safe and safety_assessment.overall_risk.value == "none":
             # Auto-approve safe operations
-            logger.info("✅ Safe migration auto-approved")
+            logger.debug("Safe migration auto-approved")
             return True
 
         # For risky operations, delegate to existing confirmation system
@@ -4761,7 +4845,7 @@ class DataFlow:
             # Execute migration SQL statements
             try:
                 for sql in migration_sqls:
-                    logger.info(f"Executing migration SQL: {sql}")
+                    logger.debug(f"Executing migration SQL: {sql}")
 
                     if is_sqlite:
                         # SQLite doesn't support cursor context manager
@@ -4774,7 +4858,7 @@ class DataFlow:
                             cursor.execute(sql)
 
                 connection.commit()
-                logger.info(
+                logger.debug(
                     f"Successfully executed {len(migration_sqls)} migration operations on table '{table_name}'"
                 )
             except Exception as sql_error:
@@ -4790,7 +4874,7 @@ class DataFlow:
                     migration_record
                 )
 
-            logger.info(
+            logger.debug(
                 f"PostgreSQL migration executed and tracked successfully for model {model_name}"
             )
 
@@ -4809,7 +4893,7 @@ class DataFlow:
                 f"PostgreSQL migration execution failed for model {model_name}: {e}"
             )
             # Don't raise - allow model registration to continue
-            logger.info(f"Model {model_name} registered without PostgreSQL migration")
+            logger.debug(f"Model {model_name} registered without PostgreSQL migration")
 
     def _generate_migration_sql(
         self, operation, table_name: str, database_type: str
@@ -4903,7 +4987,7 @@ class DataFlow:
 
     def _show_migration_preview(self, preview: str):
         """Show migration preview to user."""
-        logger.info(f"Migration Preview:\n{preview}")
+        logger.debug(f"Migration Preview:\n{preview}")
 
     def _notify_user_error(self, error_message: str):
         """Notify user of migration errors."""
@@ -4950,7 +5034,7 @@ class DataFlow:
         # Generate complete schema SQL
         schema_sql = self.generate_complete_schema_sql(database_type)
 
-        logger.info(f"Creating database schema for {len(self._models)} models")
+        logger.debug(f"Creating database schema for {len(self._models)} models")
 
         # Log generated SQL for debugging
         logger.debug(f"Generated {len(schema_sql['tables'])} table statements")
@@ -4962,7 +5046,7 @@ class DataFlow:
         # Execute DDL statements against the database using AsyncSQLDatabaseNode
         self._execute_ddl(schema_sql)
 
-        logger.info(
+        logger.debug(
             f"Successfully created database schema for {len(self._models)} models"
         )
 
@@ -4997,7 +5081,7 @@ class DataFlow:
         # Generate complete schema SQL
         schema_sql = self.generate_complete_schema_sql(database_type)
 
-        logger.info(f"Creating database schema for {len(self._models)} models (async)")
+        logger.debug(f"Creating database schema for {len(self._models)} models (async)")
 
         # Log generated SQL for debugging
         logger.debug(f"Generated {len(schema_sql['tables'])} table statements")
@@ -5009,7 +5093,7 @@ class DataFlow:
         # Execute DDL statements asynchronously
         await self._execute_ddl_async(schema_sql)
 
-        logger.info(
+        logger.debug(
             f"Successfully created database schema for {len(self._models)} models (async)"
         )
 
@@ -5143,7 +5227,7 @@ class DataFlow:
                 )
                 results, _ = runtime.execute(workflow.build())
 
-            logger.info("Migration tables ensured successfully")
+            logger.debug("Migration tables ensured successfully")
             # Note: dataflow_migration_history is created by SchemaStateManager
 
         except Exception as e:
@@ -5277,7 +5361,7 @@ class DataFlow:
                     workflow.build(), inputs={}
                 )
 
-            logger.info("Migration tables ensured successfully (async)")
+            logger.debug("Migration tables ensured successfully (async)")
 
         except Exception as e:
             logger.error(f"Error ensuring migration tables (async): {e}")
@@ -5312,7 +5396,7 @@ class DataFlow:
                 field_names.append(name)
 
         # DEBUG: Log the exact field order used in SQL generation
-        logger.warning(
+        logger.debug(
             f"SQL GENERATION {model_name} - Field order from fields.keys(): {field_names}"
         )
 
@@ -5891,11 +5975,11 @@ class DataFlow:
 
                     # Execute the DDL statement
                     result = ddl_node.execute()
-                    logger.info(f"Executed DDL: {statement[:100]}...")
+                    logger.debug(f"Executed DDL: {statement[:100]}...")
 
                     # Check if this was a successful CREATE TABLE
                     if "CREATE TABLE" in statement and result:
-                        logger.info(
+                        logger.debug(
                             f"Successfully created table from statement: {statement[:50]}..."
                         )
                 except Exception as e:
@@ -5968,11 +6052,11 @@ class DataFlow:
                         workflow.build(), inputs={}
                     )
 
-                    logger.info(f"Executed DDL (async): {statement[:100]}...")
+                    logger.debug(f"Executed DDL (async): {statement[:100]}...")
 
                     # Check if this was a successful CREATE TABLE
                     if "CREATE TABLE" in statement:
-                        logger.info(
+                        logger.debug(
                             f"Successfully created table from statement (async): {statement[:50]}..."
                         )
                 except Exception as e:
@@ -6058,7 +6142,7 @@ class DataFlow:
             result = executor.execute_ddl(table_sql)
 
             if result.get("success"):
-                logger.info(
+                logger.debug(
                     f"Sync DDL: Created table for model '{model_name}' successfully"
                 )
 
@@ -6159,7 +6243,7 @@ class DataFlow:
 
             # CRITICAL: MongoDB doesn't use SQL DDL - collections are created on first insert
             if database_type == "mongodb":
-                logger.info(
+                logger.debug(
                     "create_tables_sync() not needed for MongoDB. "
                     "MongoDB is schemaless - collections are created automatically on first insert."
                 )
@@ -6168,7 +6252,7 @@ class DataFlow:
             # Generate complete schema SQL
             schema_sql = self.generate_complete_schema_sql(database_type)
 
-            logger.info(
+            logger.debug(
                 f"Creating database schema for {len(self._models)} models using sync DDL"
             )
 
@@ -6200,7 +6284,7 @@ class DataFlow:
                         else:
                             logger.warning(f"Sync DDL failed: {error}")
 
-            logger.info(
+            logger.debug(
                 f"Sync DDL: Successfully executed {success_count}/{len(all_statements)} statements"
             )
 
@@ -6337,7 +6421,7 @@ class DataFlow:
                     "auto_detected": True,
                 }
 
-                logger.info(
+                logger.debug(
                     f"Auto-detected relationship: {table_name}.{rel_name} -> {fk['foreign_table_name']}"
                 )
 
@@ -6381,7 +6465,7 @@ class DataFlow:
         except Exception as e:
             # If schema discovery fails, log and continue without relationships
             # This is non-fatal - models work fine without auto-detected relationships
-            logger.warning(
+            logger.debug(
                 f"Async relationship auto-detection skipped for {model_name}: {e}"
             )
             return
@@ -6413,7 +6497,7 @@ class DataFlow:
                     "auto_detected": True,
                 }
 
-                logger.info(
+                logger.debug(
                     f"Auto-detected relationship (async): {table_name}.{rel_name} -> {fk['foreign_table_name']}"
                 )
 
@@ -6493,7 +6577,7 @@ class DataFlow:
                     )
                     return False
 
-            logger.info(
+            logger.debug(
                 f"Schema validation passed for model '{model_name}'. "
                 f"Existing database is compatible."
             )
@@ -6635,7 +6719,7 @@ class DataFlow:
                     )
                     return False
                 else:
-                    logger.info(
+                    logger.debug(
                         f"Field '{field_name}' missing from table '{table_name}' "
                         f"but has default value - compatible"
                     )
@@ -7231,7 +7315,7 @@ class DataFlow:
                         "auto_detected": True,
                     }
 
-                    logger.info(
+                    logger.debug(
                         f"Auto-detected reverse relationship: {table_name}.{rel_name} -> {other_table}"
                     )
 
@@ -7298,7 +7382,7 @@ class DataFlow:
         This method is used in integration tests to clean up any test data
         and ensure a clean state between tests.
         """
-        logger.info("Test table cleanup called")
+        logger.debug("Test table cleanup called")
 
         try:
             # Get database connection
@@ -7336,17 +7420,17 @@ class DataFlow:
                                 )
                                 logger.debug(f"Dropped test table: {table_name}")
                             except Exception as e:
-                                logger.warning(
+                                logger.debug(
                                     f"Failed to drop test table {table_name}: {e}"
                                 )
                 except Exception as e:
-                    logger.warning(
+                    logger.debug(
                         f"Failed to query test tables with pattern {pattern}: {e}"
                     )
 
             await conn.close()
         except Exception as e:
-            logger.warning(f"Test table cleanup failed: {e}")
+            logger.debug(f"Test table cleanup failed: {e}")
             # Don't raise - cleanup failures shouldn't break tests
 
     def _test_database_connection(self) -> bool:
@@ -7380,7 +7464,7 @@ class DataFlow:
             try:
                 async_safe_run(self._pool_manager.close_all_pools())
             except Exception as e:
-                logger.warning(f"Error closing pool manager: {e}")
+                logger.debug(f"Error closing pool manager: {e}")
 
         # Clean up connection manager
         if hasattr(self, "_connection_manager") and self._connection_manager:
@@ -7388,7 +7472,7 @@ class DataFlow:
                 if hasattr(self._connection_manager, "close_all_connections"):
                     self._connection_manager.close_all_connections()
             except Exception as e:
-                logger.warning(f"Error closing connection manager: {e}")
+                logger.debug(f"Error closing connection manager: {e}")
 
         # Clean up persistent :memory: connection
         # Phase 6: Use async_safe_run for proper cleanup in both sync and async contexts
@@ -7396,7 +7480,7 @@ class DataFlow:
             try:
                 async_safe_run(self._memory_connection.close())
             except Exception as e:
-                logger.warning(f"Failed to close memory connection: {e}")
+                logger.debug(f"Failed to close memory connection: {e}")
             finally:
                 self._memory_connection = None
 
@@ -7428,7 +7512,7 @@ class DataFlow:
                     elif hasattr(node, "_pool_manager") and node._pool_manager:
                         await node._pool_manager.close_all_pools()
                 except Exception as e:
-                    logger.warning(f"Error closing cached SQL node for {db_type}: {e}")
+                    logger.debug(f"Error closing cached SQL node for {db_type}: {e}")
             self._async_sql_node_cache.clear()
 
         # Clean up pool manager (if enabled)
@@ -7436,7 +7520,7 @@ class DataFlow:
             try:
                 await self._pool_manager.close_all_pools()
             except Exception as e:
-                logger.warning(f"Error closing pool manager: {e}")
+                logger.debug(f"Error closing pool manager: {e}")
 
         # Clean up connection manager
         if hasattr(self, "_connection_manager") and self._connection_manager:
@@ -7444,18 +7528,18 @@ class DataFlow:
                 if hasattr(self._connection_manager, "close_all_connections"):
                     self._connection_manager.close_all_connections()
             except Exception as e:
-                logger.warning(f"Error closing connection manager: {e}")
+                logger.debug(f"Error closing connection manager: {e}")
 
         # Clean up persistent :memory: connection
         if hasattr(self, "_memory_connection") and self._memory_connection:
             try:
                 await self._memory_connection.close()
             except Exception as e:
-                logger.warning(f"Failed to close memory connection: {e}")
+                logger.debug(f"Failed to close memory connection: {e}")
             finally:
                 self._memory_connection = None
 
-        logger.info(f"DataFlow instance {self._instance_id} closed (async)")
+        logger.debug(f"DataFlow instance {self._instance_id} closed (async)")
 
     def get_node(self, node_name: str) -> Optional[Type]:
         """Get a generated node class by name.
@@ -7601,7 +7685,7 @@ class DataFlow:
             >>> # All tables will be re-validated on next access
         """
         self._schema_cache.clear()
-        logger.info("Schema cache cleared")
+        logger.debug("Schema cache cleared")
 
     def clear_table_cache(
         self, model_name: str, database_url: Optional[str] = None
@@ -7694,3 +7778,109 @@ class DataFlow:
 
     # NOTE: Context manager (__enter__/__exit__) is defined earlier at lines 1767-1866
     # DO NOT add duplicate definitions here - Python uses the LAST definition
+
+    # ---- Workflow Binding Integration (TODO-154) ----
+
+    def create_workflow(self, workflow_id: str = None) -> "WorkflowBuilder":
+        """Create a workflow bound to this DataFlow instance.
+
+        Creates a WorkflowBuilder that can be used with add_node() and
+        execute_workflow() for composing multi-step DataFlow operations.
+
+        Args:
+            workflow_id: Optional identifier for the workflow
+
+        Returns:
+            WorkflowBuilder instance
+
+        Example:
+            db = DataFlow("postgresql://...")
+
+            @db.model
+            class User:
+                name: str
+                email: str
+
+            workflow = db.create_workflow("user_setup")
+            db.add_node(workflow, "User", "Create", "create_user", {
+                "name": "Alice",
+                "email": "alice@example.com"
+            })
+            results, run_id = db.execute_workflow(workflow)
+        """
+        return self._workflow_binder.create_workflow(workflow_id)
+
+    def add_node(
+        self,
+        workflow: "WorkflowBuilder",
+        model_name: str,
+        operation: str,
+        node_id: str,
+        params: Dict[str, Any],
+        connections: Optional[Dict] = None,
+    ) -> str:
+        """Add a model node to a DataFlow workflow.
+
+        Validates the model and operation, then adds the corresponding
+        auto-generated node to the workflow.
+
+        Args:
+            workflow: WorkflowBuilder from create_workflow()
+            model_name: Registered model name (e.g., "User")
+            operation: Operation name (e.g., "Create", "Read", "Update",
+                      "Delete", "List", "Upsert", "Count",
+                      "BulkCreate", "BulkUpdate", "BulkDelete", "BulkUpsert")
+            node_id: Unique node ID within the workflow
+            params: Node parameters
+            connections: Optional connections to other nodes
+
+        Returns:
+            The node_id
+
+        Example:
+            db.add_node(workflow, "User", "Create", "create_user", {
+                "name": "Alice",
+                "email": "alice@example.com"
+            })
+        """
+        return self._workflow_binder.add_model_node(
+            workflow, model_name, operation, node_id, params, connections
+        )
+
+    def execute_workflow(
+        self,
+        workflow: "WorkflowBuilder",
+        inputs: Optional[Dict[str, Any]] = None,
+        runtime=None,
+    ):
+        """Execute a DataFlow-bound workflow.
+
+        Args:
+            workflow: Workflow from create_workflow()
+            inputs: Optional input parameters
+            runtime: Optional runtime (creates LocalRuntime if not provided)
+
+        Returns:
+            Tuple of (results_dict, run_id)
+
+        Example:
+            results, run_id = db.execute_workflow(workflow, {
+                "user_id": "user-123"
+            })
+        """
+        return self._workflow_binder.execute(workflow, inputs, runtime)
+
+    def get_available_nodes(self, model_name: str = None) -> Dict[str, list]:
+        """Get available DataFlow nodes for workflow composition.
+
+        Args:
+            model_name: Optional model name to filter by
+
+        Returns:
+            Dict mapping model names to lists of available operations
+
+        Example:
+            >>> nodes = db.get_available_nodes()
+            >>> # {'User': ['Create', 'Read', 'Update', 'Delete', ...]}
+        """
+        return self._workflow_binder.get_available_nodes(model_name)

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+
 from dataflow.migrations.concurrent_access_manager import (
     LockStatus,
     MigrationLockManager,
@@ -26,8 +27,9 @@ class TestConnectionManagerAdapter:
     def test_adapter_initialization(self):
         """Test ConnectionManagerAdapter initializes correctly."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "postgresql://localhost/test"
         mock_dataflow.config.database.get_connection_url.return_value = (
-            "sqlite:///:memory:"
+            "postgresql://localhost/test"
         )
         mock_dataflow.config.environment = "test"
 
@@ -35,13 +37,14 @@ class TestConnectionManagerAdapter:
 
         assert adapter.dataflow == mock_dataflow
         assert not adapter._transaction_started
-        assert adapter._parameter_style == "postgresql"  # Default
+        assert adapter._parameter_style == "postgresql"  # Default for PostgreSQL URL
 
     def test_adapter_parameter_format_conversion(self):
         """Test parameter placeholder conversion from %s to $1, $2, etc."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "postgresql://localhost/test"
         mock_dataflow.config.database.get_connection_url.return_value = (
-            "sqlite:///:memory:"
+            "postgresql://localhost/test"
         )
         mock_dataflow.config.environment = "test"
         adapter = ConnectionManagerAdapter(mock_dataflow)
@@ -59,6 +62,7 @@ class TestConnectionManagerAdapter:
     def test_adapter_parameter_format_no_conversion_needed(self):
         """Test parameter conversion when no %s placeholders exist."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -76,6 +80,7 @@ class TestConnectionManagerAdapter:
     async def test_execute_query_basic(self):
         """Test basic query execution through adapter."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -95,14 +100,17 @@ class TestConnectionManagerAdapter:
     async def test_execute_query_with_parameter_conversion(self):
         """Test query execution with parameter format conversion."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
         adapter = ConnectionManagerAdapter(mock_dataflow)
 
-        # Mock the _runtime.execute method to return success
+        # Mock the _runtime.execute_workflow_async method to return success
         mock_runtime = Mock()
-        mock_runtime.execute.return_value = ({"query_execution": {"result": []}}, None)
+        mock_runtime.execute_workflow_async = AsyncMock(
+            return_value=({"query_execution": {"result": []}}, None)
+        )
         adapter._runtime = mock_runtime
 
         sql = "INSERT INTO locks (name, value) VALUES (%s, %s)"
@@ -110,8 +118,8 @@ class TestConnectionManagerAdapter:
 
         result = await adapter.execute_query(sql, params)
 
-        # Should have called runtime.execute with converted SQL
-        mock_runtime.execute.assert_called_once()
+        # Should have called runtime.execute_workflow_async with converted SQL
+        mock_runtime.execute_workflow_async.assert_called_once()
 
         # Should return success indicator for empty results (DML operations)
         assert result == [{"success": True}]
@@ -120,14 +128,17 @@ class TestConnectionManagerAdapter:
     async def test_execute_query_dml_result_handling(self):
         """Test DML operation result handling - empty results should return success."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
         adapter = ConnectionManagerAdapter(mock_dataflow)
 
-        # Mock the _runtime.execute method
+        # Mock the _runtime.execute_workflow_async method
         mock_runtime = Mock()
-        mock_runtime.execute.return_value = ({"query_execution": {"result": []}}, None)
+        mock_runtime.execute_workflow_async = AsyncMock(
+            return_value=({"query_execution": {"result": []}}, None)
+        )
         adapter._runtime = mock_runtime
 
         result = await adapter.execute_query("INSERT INTO test (id) VALUES (%s)", [1])
@@ -139,6 +150,7 @@ class TestConnectionManagerAdapter:
     async def test_execute_query_select_result_handling(self):
         """Test SELECT operation result handling - return actual results."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -146,11 +158,13 @@ class TestConnectionManagerAdapter:
 
         expected_results = [{"id": 1, "name": "test"}]
 
-        # Mock the _runtime.execute method
+        # Mock the _runtime.execute_workflow_async method
         mock_runtime = Mock()
-        mock_runtime.execute.return_value = (
-            {"query_execution": {"result": [{"data": expected_results}]}},
-            None,
+        mock_runtime.execute_workflow_async = AsyncMock(
+            return_value=(
+                {"query_execution": {"result": [{"data": expected_results}]}},
+                None,
+            )
         )
         adapter._runtime = mock_runtime
 
@@ -163,16 +177,19 @@ class TestConnectionManagerAdapter:
     async def test_transaction_operations(self):
         """Test transaction begin, commit, and rollback operations."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
         adapter = ConnectionManagerAdapter(mock_dataflow)
 
-        # Mock the _runtime.execute method for transactions
+        # Mock the _runtime.execute_workflow_async method for transactions
         mock_runtime = Mock()
-        mock_runtime.execute.return_value = (
-            {"begin_transaction": {"result": "success"}},
-            None,
+        mock_runtime.execute_workflow_async = AsyncMock(
+            return_value=(
+                {"begin_transaction": {"result": "success"}},
+                None,
+            )
         )
         adapter._runtime = mock_runtime
 
@@ -181,7 +198,7 @@ class TestConnectionManagerAdapter:
         assert adapter._transaction_started
 
         # Reset response for commit
-        mock_runtime.execute.return_value = (
+        mock_runtime.execute_workflow_async.return_value = (
             {"commit_transaction": {"result": "success"}},
             None,
         )
@@ -191,7 +208,7 @@ class TestConnectionManagerAdapter:
         assert not adapter._transaction_started
 
         # Reset response for begin
-        mock_runtime.execute.return_value = (
+        mock_runtime.execute_workflow_async.return_value = (
             {"begin_transaction": {"result": "success"}},
             None,
         )
@@ -201,7 +218,7 @@ class TestConnectionManagerAdapter:
         assert adapter._transaction_started
 
         # Reset response for rollback
-        mock_runtime.execute.return_value = (
+        mock_runtime.execute_workflow_async.return_value = (
             {"rollback_transaction": {"result": "success"}},
             None,
         )
@@ -218,6 +235,7 @@ class TestMigrationLockManagerIntegration:
     async def test_lock_manager_initialization_with_adapter(self):
         """Test MigrationLockManager initializes correctly with ConnectionManagerAdapter."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -234,6 +252,7 @@ class TestMigrationLockManagerIntegration:
     async def test_lock_acquisition_success(self):
         """Test successful lock acquisition."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -256,6 +275,7 @@ class TestMigrationLockManagerIntegration:
     async def test_lock_acquisition_failure(self):
         """Test lock acquisition failure when lock already exists."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -282,6 +302,7 @@ class TestMigrationLockManagerIntegration:
     async def test_lock_release(self):
         """Test lock release functionality."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -301,6 +322,7 @@ class TestMigrationLockManagerIntegration:
     async def test_lock_status_check(self):
         """Test lock status checking functionality."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -328,6 +350,7 @@ class TestMigrationLockManagerIntegration:
     async def test_lock_context_manager(self):
         """Test lock context manager functionality."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -350,6 +373,7 @@ class TestMigrationLockManagerIntegration:
     async def test_lock_context_manager_acquisition_failure(self):
         """Test lock context manager when acquisition fails."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -375,8 +399,9 @@ class TestParameterConversionEdgeCases:
     def test_multiple_parameter_conversion(self):
         """Test conversion with many parameters."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "postgresql://localhost/test"
         mock_dataflow.config.database.get_connection_url.return_value = (
-            "sqlite:///:memory:"
+            "postgresql://localhost/test"
         )
         adapter = ConnectionManagerAdapter(mock_dataflow)
 
@@ -392,8 +417,9 @@ class TestParameterConversionEdgeCases:
     def test_mixed_sql_with_other_placeholders(self):
         """Test conversion doesn't affect other SQL constructs."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "postgresql://localhost/test"
         mock_dataflow.config.database.get_connection_url.return_value = (
-            "sqlite:///:memory:"
+            "postgresql://localhost/test"
         )
         adapter = ConnectionManagerAdapter(mock_dataflow)
 
@@ -411,6 +437,7 @@ class TestParameterConversionEdgeCases:
     def test_no_parameters(self):
         """Test with None parameters."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "sqlite:///:memory:"
         mock_dataflow.config.database.get_connection_url.return_value = (
             "sqlite:///:memory:"
         )
@@ -427,8 +454,9 @@ class TestParameterConversionEdgeCases:
     def test_empty_parameters_list(self):
         """Test with empty parameters list."""
         mock_dataflow = Mock()
+        mock_dataflow.config.database.url = "postgresql://localhost/test"
         mock_dataflow.config.database.get_connection_url.return_value = (
-            "sqlite:///:memory:"
+            "postgresql://localhost/test"
         )
         adapter = ConnectionManagerAdapter(mock_dataflow)
 

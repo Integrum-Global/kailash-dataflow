@@ -6,6 +6,7 @@ Focus on methods that definitely exist and work.
 from unittest.mock import Mock, patch
 
 import pytest
+
 from dataflow import DataFlow
 from dataflow.core.config import DataFlowConfig
 
@@ -198,8 +199,13 @@ class TestMultiTenancyModuleBasic:
             )
 
             # Basic instantiation tests
-            config = TenantConfig()  # Use default constructor
+            config = TenantConfig(
+                tenant_id="test-tenant",
+                name="Test Tenant",
+                isolation_strategy="row_level",
+            )
             assert config is not None
+            assert config.tenant_id == "test-tenant"
 
             import os
 
@@ -213,8 +219,8 @@ class TestMultiTenancyModuleBasic:
             registry = TenantRegistry()
             assert registry is not None
 
-        except (ImportError, TypeError) as e:
-            pytest.skip(f"Multi-tenancy module not available or different API: {e}")
+        except ImportError as e:
+            pytest.skip(f"Multi-tenancy module not available: {e}")
 
     def test_isolation_strategies(self):
         """Test isolation strategy classes."""

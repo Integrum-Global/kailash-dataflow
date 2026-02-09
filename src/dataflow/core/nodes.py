@@ -10,6 +10,7 @@ from kailash.nodes.base import Node, NodeParameter, NodeRegistry
 from kailash.nodes.base_async import AsyncNode
 
 from .async_utils import async_safe_run  # Phase 6: Async-safe execution
+from .logging_config import mask_sensitive_values  # Phase 7: Sensitive value masking
 
 
 # ErrorEnhancer imported locally to avoid circular dependencies
@@ -557,7 +558,7 @@ class NodeGenerator:
                                     f"Potential SQL injection detected in field '{field_name}': {pattern}"
                                 )
                                 break
-                        logger.info(
+                        logger.debug(
                             f"Sanitized SQL injection in field '{field_name}': {original_value} -> {value}"
                         )
 
@@ -1159,7 +1160,9 @@ class NodeGenerator:
                         )
                         # Continue anyway - the database operation might still work
 
-                logger.info(f"Run called with kwargs: {kwargs}")
+                logger.debug(
+                    f"Run called with kwargs: {mask_sensitive_values(str(kwargs))}"
+                )
 
                 # TDD mode: Override connection string if test context available
                 if (
@@ -1315,6 +1318,32 @@ class NodeGenerator:
                         complete_params = convert_datetime_fields(
                             complete_params, model_fields, logger
                         )
+
+                        # Type-aware field validation (TODO-153)
+                        # Validates field types without forced conversions
+                        try:
+                            from dataflow.core.type_processor import (
+                                TypeAwareFieldProcessor,
+                            )
+
+                            type_processor = TypeAwareFieldProcessor(
+                                model_fields, self.model_name
+                            )
+                            # Process with skip_fields to avoid re-processing timestamps
+                            complete_params = type_processor.process_record(
+                                complete_params,
+                                operation="create",
+                                strict=False,
+                                skip_fields=set(),  # Don't skip - timestamps already excluded
+                            )
+                        except ImportError:
+                            # TypeAwareFieldProcessor not available, continue without
+                            logger.debug(
+                                "TypeAwareFieldProcessor not available, skipping type validation"
+                            )
+                        except TypeError as e:
+                            # Re-raise type errors with enhanced context
+                            raise
 
                         # Now parameters match SQL placeholders exactly with correct ordering
                         values = [complete_params[k] for k in field_names]
@@ -1515,7 +1544,7 @@ class NodeGenerator:
 
                     except Exception as e:
                         original_error = str(e)
-                        logger.warning(
+                        logger.debug(
                             f"CREATE {self.model_name} failed with error: {original_error}"
                         )
 
@@ -1529,14 +1558,14 @@ class NodeGenerator:
                             match = re.search(r"parameter \$(\d+)", original_error)
                             param_num = int(match.group(1)) if match else 0
 
-                            logger.warning(
+                            logger.debug(
                                 f"DATAFLOW DEBUG: Param error detected - param_num={param_num}"
                             )
 
                             # CRITICAL FIX: Handle parameter $11 type determination issue
                             if param_num == 11 and "$11" in query:
                                 try:
-                                    logger.warning(
+                                    logger.debug(
                                         "DATAFLOW PARAM $11 FIX: Detected parameter $11 issue, retrying with type cast"
                                     )
 
@@ -1569,7 +1598,7 @@ class NodeGenerator:
                                         if isinstance(row, list) and len(row) > 0:
                                             row = row[0]
                                         if isinstance(row, dict):
-                                            logger.warning(
+                                            logger.debug(
                                                 "DATAFLOW PARAM $11 FIX: Success with type cast!"
                                             )
                                             # BUG #515 FIX: Deserialize JSON fields back to dict/list
@@ -1585,12 +1614,12 @@ class NodeGenerator:
                                             # Return the created record with all fields
                                             return created_record
 
-                                    logger.warning(
+                                    logger.debug(
                                         "DATAFLOW PARAM $11 FIX: Type cast succeeded but no data returned"
                                     )
 
                                 except Exception as retry_error:
-                                    logger.warning(
+                                    logger.debug(
                                         f"DATAFLOW PARAM $11 FIX: Retry with type cast failed: {retry_error}"
                                     )
                                     # Continue with normal error handling
@@ -1961,6 +1990,28 @@ class NodeGenerator:
                             updates, self.model_fields, logger
                         )
 
+                        # Type-aware field validation (TODO-153)
+                        try:
+                            from dataflow.core.type_processor import (
+                                TypeAwareFieldProcessor,
+                            )
+
+                            type_processor = TypeAwareFieldProcessor(
+                                self.model_fields, self.model_name
+                            )
+                            updates = type_processor.process_record(
+                                updates,
+                                operation="update",
+                                strict=False,
+                                skip_fields=set(),  # Timestamps already excluded above
+                            )
+                        except ImportError:
+                            logger.debug(
+                                "TypeAwareFieldProcessor not available, skipping type validation"
+                            )
+                        except TypeError as e:
+                            raise
+
                         # Get connection string - prioritize parameter over instance config
                         connection_string = kwargs.get("database_url")
                         if not connection_string:
@@ -2251,7 +2302,7 @@ class NodeGenerator:
                     import logging
 
                     logger = logging.getLogger(__name__)
-                    logger.info(
+                    logger.debug(
                         f"DELETE: table={table_name}, id={record_id}, query={query}"
                     )
 
@@ -2266,7 +2317,7 @@ class NodeGenerator:
                         validate_queries=False,
                         transaction_mode="auto",  # Ensure auto-commit for delete operations
                     )
-                    logger.info(f"DELETE result: {result}")
+                    logger.debug(f"DELETE result: {result}")
 
                     # Check if delete was successful
                     if result and "result" in result:
@@ -2381,9 +2432,9 @@ class NodeGenerator:
                             )
 
                     # Debug logging
-                    logger.info(f"List operation - filter_dict: {filter_dict}")
-                    logger.info(f"List operation - sort: {sort}")
-                    logger.info(f"List operation - order_by: {order_by}")
+                    logger.debug(f"List operation - filter_dict: {filter_dict}")
+                    logger.debug(f"List operation - sort: {sort}")
+                    logger.debug(f"List operation - order_by: {order_by}")
 
                     # Use QueryBuilder if filters are provided
                     # FIXED: Changed from truthiness check to key existence check
@@ -2500,10 +2551,10 @@ class NodeGenerator:
                         )
 
                         # Debug logging
-                        logger.info(f"List operation - Executing query: {query}")
-                        logger.info(f"List operation - With params: {params}")
-                        logger.info(
-                            f"List operation - Connection: {connection_string[:50]}..."
+                        logger.debug(f"List operation - Executing query: {query}")
+                        logger.debug(f"List operation - With params: {params}")
+                        logger.debug(
+                            f"List operation - Connection: {mask_sensitive_values(connection_string[:50])}..."
                         )
 
                         # Get or create cached AsyncSQLDatabaseNode for connection pooling
@@ -2559,13 +2610,13 @@ class NodeGenerator:
                     cache_integration = getattr(
                         self.dataflow_instance, "_cache_integration", None
                     )
-                    logger.info(
+                    logger.debug(
                         f"List operation - cache_integration: {cache_integration}, enable_cache: {enable_cache}"
                     )
 
                     if cache_integration and enable_cache:
                         # Use cache integration
-                        logger.info("List operation - Using cache integration")
+                        logger.debug("List operation - Using cache integration")
                         result = await cache_integration.execute_with_cache(
                             model_name=self.model_name,
                             query=query,
@@ -2575,13 +2626,13 @@ class NodeGenerator:
                             cache_ttl=cache_ttl,
                             cache_key_override=cache_key_override,
                         )
-                        logger.info(f"List operation - Cache result: {result}")
+                        logger.debug(f"List operation - Cache result: {result}")
                         return result
                     else:
                         # Execute directly without caching
-                        logger.info("List operation - Executing without cache")
+                        logger.debug("List operation - Executing without cache")
                         result = await execute_query()
-                        logger.info(f"List operation - Direct result: {result}")
+                        logger.debug(f"List operation - Direct result: {result}")
                         return result
 
                 elif operation == "upsert":
@@ -2715,6 +2766,32 @@ class NodeGenerator:
                     update_data = convert_datetime_fields(
                         update_data, self.model_fields, logger
                     )
+
+                    # Type-aware field validation (TODO-153)
+                    try:
+                        from dataflow.core.type_processor import TypeAwareFieldProcessor
+
+                        type_processor = TypeAwareFieldProcessor(
+                            self.model_fields, self.model_name
+                        )
+                        insert_data = type_processor.process_record(
+                            insert_data,
+                            operation="upsert-create",
+                            strict=False,
+                            skip_fields=set(),
+                        )
+                        update_data = type_processor.process_record(
+                            update_data,
+                            operation="upsert-update",
+                            strict=False,
+                            skip_fields=set(),
+                        )
+                    except ImportError:
+                        logger.debug(
+                            "TypeAwareFieldProcessor not available, skipping type validation"
+                        )
+                    except TypeError as e:
+                        raise
 
                     # Build database-specific upsert query using SQL Dialect Abstraction
                     table_name = self.dataflow_instance._get_table_name(self.model_name)
@@ -2919,7 +2996,7 @@ class NodeGenerator:
                             )
 
                     # Debug logging
-                    logger.info(f"Count operation - filter_dict: {filter_dict}")
+                    logger.debug(f"Count operation - filter_dict: {filter_dict}")
 
                     # Use QueryBuilder if filters are provided
                     has_filters = "filter" in kwargs or has_soft_delete
@@ -2987,9 +3064,9 @@ class NodeGenerator:
                     db_type = ConnectionParser.detect_database_type(connection_string)
 
                     # Debug logging
-                    logger.info(f"Count operation - Executing query: {query}")
-                    logger.info(f"Count operation - With params: {params}")
-                    logger.info(f"Count operation - Database type: {db_type}")
+                    logger.debug(f"Count operation - Executing query: {query}")
+                    logger.debug(f"Count operation - With params: {params}")
+                    logger.debug(f"Count operation - Database type: {db_type}")
 
                     # Execute SQL query
                     sql_node = self.dataflow_instance._get_or_create_async_sql_node(
@@ -3003,7 +3080,7 @@ class NodeGenerator:
                         transaction_mode="auto",
                     )
 
-                    logger.info(f"Count operation - Result from SQL: {result}")
+                    logger.debug(f"Count operation - Result from SQL: {result}")
 
                     # Extract count from result
                     if result and "result" in result and "data" in result["result"]:
@@ -3023,12 +3100,14 @@ class NodeGenerator:
                         elif isinstance(data, (int, float)):
                             count_value = int(data)
 
-                        logger.info(f"Count operation - Extracted count: {count_value}")
+                        logger.debug(
+                            f"Count operation - Extracted count: {count_value}"
+                        )
 
                         return {"count": int(count_value)}
 
                     # If no result, return 0
-                    logger.warning(
+                    logger.debug(
                         "Count operation - No result returned, defaulting to 0"
                     )
                     return {"count": 0}

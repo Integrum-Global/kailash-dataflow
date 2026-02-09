@@ -25,6 +25,7 @@ from typing import Any, Dict, List
 
 import asyncpg
 import pytest
+
 from dataflow import DataFlow
 from dataflow.migrations.dependency_analyzer import (
     DependencyAnalyzer,
@@ -35,7 +36,7 @@ from dataflow.migrations.dependency_analyzer import (
 from dataflow.migrations.migration_connection_manager import MigrationConnectionManager
 
 # Import test infrastructure
-from tests.infrastructure.test_harness import DatabaseInfrastructure, TestDatabaseConfig
+from tests.infrastructure.test_harness import DatabaseConfig, DatabaseInfrastructure
 
 # Configure logging for E2E test debugging
 logging.basicConfig(level=logging.INFO)
@@ -46,7 +47,7 @@ logger = logging.getLogger(__name__)
 @pytest.fixture(scope="session")
 async def e2e_database():
     """Set up E2E test database infrastructure."""
-    config = TestDatabaseConfig.from_environment()
+    config = DatabaseConfig.from_environment()
     infrastructure = DatabaseInfrastructure(config)
     await infrastructure.initialize()
 

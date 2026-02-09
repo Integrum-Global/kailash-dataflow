@@ -122,7 +122,6 @@ def mock_enhanced_error():
         ],
         solutions=[solution1],
         docs_url="https://dataflow.dev/errors/df-101",
-        severity="error",
     )
 
     return error
@@ -280,7 +279,7 @@ class TestDebugAgentCLIExecution:
     """Test CLI execution with DebugAgent."""
 
     @patch("dataflow.cli.debug_agent_cli.DebugAgent")
-    @patch("dataflow.cli.debug_agent_cli.DataFlowErrorEnhancer")
+    @patch("dataflow.cli.debug_agent_cli.ErrorEnhancer")
     def test_diagnose_with_error_input(
         self,
         mock_enhancer_class,
@@ -319,7 +318,7 @@ class TestDebugAgentCLIExecution:
 
     @patch("kailash.workflow.builder.WorkflowBuilder")
     @patch("dataflow.cli.debug_agent_cli.KnowledgeBase")
-    @patch("dataflow.cli.debug_agent_cli.DataFlowErrorEnhancer")
+    @patch("dataflow.cli.debug_agent_cli.ErrorEnhancer")
     @patch("dataflow.cli.debug_agent_cli.DebugAgent")
     @patch("dataflow.cli.debug_agent_cli.load_workflow")
     def test_diagnose_with_workflow_file(
@@ -332,9 +331,16 @@ class TestDebugAgentCLIExecution:
         cli_runner,
         mock_diagnosis,
         mock_enhanced_error,
+        tmp_path,
     ):
         """Test diagnose command with workflow file."""
+        import os
+
         from dataflow.cli.debug_agent_cli import diagnose
+
+        # Create a temporary workflow file so click.Path(exists=True) passes
+        workflow_file = tmp_path / "test_workflow.py"
+        workflow_file.write_text("workflow = None")
 
         # Setup mocks
         mock_workflow_inst = Mock()
@@ -359,7 +365,7 @@ class TestDebugAgentCLIExecution:
             diagnose,
             [
                 "--workflow",
-                "test_workflow.py",
+                str(workflow_file),
                 "--error-input",
                 "test error",
                 "--format",
@@ -368,7 +374,7 @@ class TestDebugAgentCLIExecution:
         )
 
         # Verify workflow was loaded
-        mock_load_workflow.assert_called_once_with("test_workflow.py")
+        mock_load_workflow.assert_called_once_with(str(workflow_file))
 
         # If the test still fails, verify at least the command executed
         assert result.exit_code == 0 or "not found" in result.output.lower()
@@ -386,7 +392,7 @@ class TestDebugAgentCLIExecution:
 
     @patch("kailash.workflow.builder.WorkflowBuilder")
     @patch("dataflow.cli.debug_agent_cli.DebugAgent")
-    @patch("dataflow.cli.debug_agent_cli.DataFlowErrorEnhancer")
+    @patch("dataflow.cli.debug_agent_cli.ErrorEnhancer")
     @patch("dataflow.cli.debug_agent_cli.KnowledgeBase")
     def test_diagnose_json_output_format(
         self,
@@ -435,7 +441,7 @@ class TestDebugAgentCLIExecution:
 
     @patch("kailash.workflow.builder.WorkflowBuilder")
     @patch("dataflow.cli.debug_agent_cli.DebugAgent")
-    @patch("dataflow.cli.debug_agent_cli.DataFlowErrorEnhancer")
+    @patch("dataflow.cli.debug_agent_cli.ErrorEnhancer")
     @patch("dataflow.cli.debug_agent_cli.KnowledgeBase")
     def test_diagnose_verbose_flag(
         self,
@@ -482,7 +488,7 @@ class TestDebugAgentCLIExecution:
 
     @patch("kailash.workflow.builder.WorkflowBuilder")
     @patch("dataflow.cli.debug_agent_cli.DebugAgent")
-    @patch("dataflow.cli.debug_agent_cli.DataFlowErrorEnhancer")
+    @patch("dataflow.cli.debug_agent_cli.ErrorEnhancer")
     @patch("dataflow.cli.debug_agent_cli.KnowledgeBase")
     def test_diagnose_top_n_option(
         self,

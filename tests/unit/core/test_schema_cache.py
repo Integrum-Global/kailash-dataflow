@@ -21,16 +21,13 @@ from typing import Any, Dict
 
 import pytest
 
-# Import the SchemaCache components (will be implemented)
-try:
-    from dataflow.core.schema_cache import (
-        SchemaCache,
-        TableCacheEntry,
-        TableState,
-        create_schema_cache,
-    )
-except ImportError:
-    pytest.skip("SchemaCache not implemented yet", allow_module_level=True)
+# Import the SchemaCache components
+from dataflow.core.schema_cache import (
+    SchemaCache,
+    TableCacheEntry,
+    TableState,
+    create_schema_cache,
+)
 
 
 class TestSchemaCacheBasicOperations:

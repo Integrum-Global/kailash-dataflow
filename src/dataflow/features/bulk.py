@@ -286,6 +286,24 @@ class BulkOperations:
         for record in data:
             convert_datetime_fields(record, model_fields, logger)
 
+        # Type-aware field validation (TODO-153)
+        try:
+            from ..core.type_processor import TypeAwareFieldProcessor
+
+            type_processor = TypeAwareFieldProcessor(model_fields, model_name)
+            data = type_processor.process_records(
+                data,
+                operation="bulk_create",
+                strict=False,
+                skip_fields=set(),  # Timestamps already excluded
+            )
+        except ImportError:
+            logger.debug(
+                "TypeAwareFieldProcessor not available, skipping type validation"
+            )
+        except TypeError as e:
+            return {"success": False, "error": str(e)}
+
         # Perform actual database insertion
         try:
             connection_string = self.dataflow.config.database.get_connection_url(
@@ -470,6 +488,24 @@ class BulkOperations:
                     update_values, model_fields, logger
                 )
 
+                # Type-aware field validation (TODO-153)
+                try:
+                    from ..core.type_processor import TypeAwareFieldProcessor
+
+                    type_processor = TypeAwareFieldProcessor(model_fields, model_name)
+                    update_values = type_processor.process_record(
+                        update_values,
+                        operation="bulk_update",
+                        strict=False,
+                        skip_fields=set(),
+                    )
+                except ImportError:
+                    logger.debug(
+                        "TypeAwareFieldProcessor not available, skipping type validation"
+                    )
+                except TypeError as e:
+                    return {"success": False, "error": str(e), "records_processed": 0}
+
                 # Get database connection and execute UPDATE
                 connection_string = self.dataflow.config.database.get_connection_url(
                     self.dataflow.config.environment
@@ -585,6 +621,24 @@ class BulkOperations:
             model_fields = self.dataflow.get_model_fields(model_name)
             for record in data:
                 convert_datetime_fields(record, model_fields, logger)
+
+            # Type-aware field validation (TODO-153)
+            try:
+                from ..core.type_processor import TypeAwareFieldProcessor
+
+                type_processor = TypeAwareFieldProcessor(model_fields, model_name)
+                data = type_processor.process_records(
+                    data,
+                    operation="bulk_update",
+                    strict=False,
+                    skip_fields=set(),
+                )
+            except ImportError:
+                logger.debug(
+                    "TypeAwareFieldProcessor not available, skipping type validation"
+                )
+            except TypeError as e:
+                return {"success": False, "error": str(e), "records_processed": 0}
 
             try:
                 connection_string = self.dataflow.config.database.get_connection_url(
@@ -930,6 +984,24 @@ class BulkOperations:
         model_fields = self.dataflow.get_model_fields(model_name)
         for record in data:
             convert_datetime_fields(record, model_fields, logger)
+
+        # Type-aware field validation (TODO-153)
+        try:
+            from ..core.type_processor import TypeAwareFieldProcessor
+
+            type_processor = TypeAwareFieldProcessor(model_fields, model_name)
+            data = type_processor.process_records(
+                data,
+                operation="bulk_upsert",
+                strict=False,
+                skip_fields=set(),
+            )
+        except ImportError:
+            logger.debug(
+                "TypeAwareFieldProcessor not available, skipping type validation"
+            )
+        except TypeError as e:
+            return {"success": False, "error": str(e)}
 
         # Perform actual database upsert
         try:

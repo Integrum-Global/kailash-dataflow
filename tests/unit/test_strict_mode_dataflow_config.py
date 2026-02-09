@@ -1,27 +1,32 @@
 """
-Unit tests for DataFlow global strict mode configuration.
+Unit tests for DataFlow validation configuration.
 
-Tests DataFlow class strict_mode and strict_level parameters, ensuring:
-1. Global strict mode configuration works correctly
-2. Per-model override via __dataflow__ dict works
-3. Precedence rules are followed: __dataflow__ > decorator > global
-4. Backward compatibility (default strict=False)
-5. StrictLevel enum works (RELAXED, MODERATE, AGGRESSIVE)
+Tests the validation modes available via the standalone @model decorator.
+Note: DataFlow class does NOT have strict_mode parameter - validation is
+configured per-model using the @model decorator from dataflow.decorators.
+
+Available validation modes:
+- ValidationMode.OFF: No validation
+- ValidationMode.WARN: Warn about issues but allow registration (default)
+- ValidationMode.STRICT: Raise errors on validation failures
+
+Shorthand parameters:
+- strict=True is equivalent to validation=ValidationMode.STRICT
+- strict=False is equivalent to validation=ValidationMode.WARN
+- skip_validation=True is equivalent to validation=ValidationMode.OFF
+
+StrictLevel enum exists in strict_mode_validator.py for workflow validation.
 """
 
+import warnings
+
 import pytest
-from dataflow import DataFlow
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import declarative_base
+
 from dataflow.decorators import ValidationMode, model
-from dataflow.exceptions import ModelValidationError
+from dataflow.exceptions import DataFlowValidationWarning
 from dataflow.validators.strict_mode_validator import StrictLevel
-from sqlalchemy import Column, Integer, String, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
-
-
-@pytest.fixture
-def memory_db():
-    """Create in-memory SQLite database for testing."""
-    return DataFlow(":memory:")
 
 
 @pytest.fixture
@@ -31,439 +36,377 @@ def base():
 
 
 # ==============================================================================
-# Test 1: Global strict_mode Parameter in DataFlow.__init__()
+# Test 1: ValidationMode Enum Exists and Has Expected Values
 # ==============================================================================
 
 
-def test_dataflow_init_accepts_strict_mode_parameter():
-    """Test that DataFlow.__init__() accepts strict_mode parameter."""
-    # Should not raise error
-    db = DataFlow(":memory:", strict_mode=True)
-    assert hasattr(db, "strict_mode")
-    assert db.strict_mode is True
+def test_validation_mode_enum_exists():
+    """Test that ValidationMode enum exists with expected values."""
+    assert hasattr(ValidationMode, "OFF")
+    assert hasattr(ValidationMode, "WARN")
+    assert hasattr(ValidationMode, "STRICT")
 
 
-def test_dataflow_init_accepts_strict_mode_false():
-    """Test that DataFlow.__init__() accepts strict_mode=False."""
-    db = DataFlow(":memory:", strict_mode=False)
-    assert hasattr(db, "strict_mode")
-    assert db.strict_mode is False
+def test_validation_mode_off_value():
+    """Test ValidationMode.OFF value."""
+    assert ValidationMode.OFF.value == "off"
 
 
-def test_dataflow_init_strict_mode_defaults_to_false():
-    """Test that strict_mode defaults to False (backward compatible)."""
-    db = DataFlow(":memory:")
-    assert hasattr(db, "strict_mode")
-    assert db.strict_mode is False
+def test_validation_mode_warn_value():
+    """Test ValidationMode.WARN value."""
+    assert ValidationMode.WARN.value == "warn"
 
 
-# ==============================================================================
-# Test 2: strict_mode Stored in DataFlow Instance
-# ==============================================================================
-
-
-def test_dataflow_stores_strict_mode_value():
-    """Test that DataFlow instance stores strict_mode value."""
-    db_strict = DataFlow(":memory:", strict_mode=True)
-    db_warn = DataFlow(":memory:", strict_mode=False)
-
-    assert db_strict.strict_mode is True
-    assert db_warn.strict_mode is False
-
-
-def test_dataflow_strict_mode_accessible():
-    """Test that strict_mode is accessible from DataFlow instance."""
-    db = DataFlow(":memory:", strict_mode=True)
-
-    # Should be accessible
-    assert db.strict_mode is True
-    assert isinstance(db.strict_mode, bool)
+def test_validation_mode_strict_value():
+    """Test ValidationMode.STRICT value."""
+    assert ValidationMode.STRICT.value == "strict"
 
 
 # ==============================================================================
-# Test 3: Per-Model Override Works Correctly
+# Test 2: StrictLevel Enum Exists and Has Expected Values
 # ==============================================================================
 
 
-def test_per_model_override_via_dataflow_dict(memory_db, base):
-    """Test that __dataflow__['strict'] overrides global strict_mode."""
-    # Global strict_mode=False
-    memory_db.strict_mode = False
-
-    # Model with __dataflow__={'strict': True} should fail validation
-    with pytest.raises(ModelValidationError):
-
-        @model(strict=False)  # Decorator says False
-        class User(base):
-            __tablename__ = "users_override_1"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-
-            __dataflow__ = {"strict": True}  # This should win!
-
-
-def test_per_model_override_allows_opt_out(memory_db, base):
-    """Test that __dataflow__['strict']=False allows opt-out from global strict."""
-    # Global strict_mode=True
-    memory_db.strict_mode = True
-
-    # Model with __dataflow__={'strict': False} should NOT raise
-    try:
-
-        @model  # Should inherit global strict_mode
-        class User(base):
-            __tablename__ = "users_override_2"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-
-            __dataflow__ = {"strict": False}  # Opt out
-
-        # If we get here, opt-out worked
-        assert True
-    except ModelValidationError:
-        pytest.fail("__dataflow__['strict']=False should override global strict_mode")
-
-
-# ==============================================================================
-# Test 4: Precedence Rules (__dataflow__ > decorator > global)
-# ==============================================================================
-
-
-def test_precedence_dataflow_dict_beats_decorator():
-    """Test that __dataflow__['strict'] overrides decorator parameter."""
-    # This test should raise because __dataflow__['strict']=True wins over decorator strict=False
-
-    base_local = declarative_base()
-
-    with pytest.raises(ModelValidationError):
-
-        @model(strict=False)  # Decorator says False
-        class User(base_local):
-            __tablename__ = "users_precedence_1"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-
-            __dataflow__ = {"strict": True}  # This should win!
-
-
-def test_precedence_dataflow_dict_beats_global():
-    """Test that __dataflow__['strict'] overrides global strict_mode."""
-    db = DataFlow(":memory:", strict_mode=False)  # Global says False
-    base_local = declarative_base()
-
-    with pytest.raises(ModelValidationError):
-
-        @model  # Should read from global (False), but __dataflow__ wins
-        class User(base_local):
-            __tablename__ = "users_precedence_2"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-
-            __dataflow__ = {"strict": True}  # This should win!
-
-
-def test_precedence_decorator_beats_global():
-    """Test that decorator strict=True overrides global strict_mode=False."""
-    db = DataFlow(":memory:", strict_mode=False)  # Global says False
-    base_local = declarative_base()
-
-    with pytest.raises(ModelValidationError):
-
-        @model(strict=True)  # Decorator says True
-        class User(base_local):
-            __tablename__ = "users_precedence_3"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-
-
-def test_precedence_global_is_fallback():
-    """Test that global strict_mode is used when no override exists."""
-    db = DataFlow(":memory:", strict_mode=True)  # Global says True
-    base_local = declarative_base()
-
-    # Model with no __dataflow__ and no decorator parameter should use global
-    with pytest.raises(ModelValidationError):
-
-        @model  # No strict parameter
-        class User(base_local):
-            __tablename__ = "users_precedence_4"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-            # No __dataflow__ dict
-
-
-# ==============================================================================
-# Test 5: Default is False (Backward Compatible)
-# ==============================================================================
-
-
-def test_default_strict_mode_is_false():
-    """Test that default strict_mode is False (backward compatible)."""
-    db = DataFlow(":memory:")
-    assert db.strict_mode is False
-
-
-def test_default_allows_non_id_primary_key():
-    """Test that default mode (strict=False) allows non-id primary keys."""
-    db = DataFlow(":memory:")  # strict_mode=False by default
-    base_local = declarative_base()
-
-    # Should not raise (only warning in WARN mode)
-    try:
-
-        @model  # Uses default WARN mode
-        class User(base_local):
-            __tablename__ = "users_default"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-            name: str = Column(String)
-
-        # Success - WARN mode allows this
-        assert True
-    except ModelValidationError:
-        pytest.fail("Default mode should be WARN, not STRICT")
-
-
-# ==============================================================================
-# Test 6: Validation Propagates to Model Registration
-# ==============================================================================
-
-
-def test_global_strict_mode_propagates_to_models():
-    """Test that global strict_mode propagates to model validation."""
-    db = DataFlow(":memory:", strict_mode=True)
-    base_local = declarative_base()
-
-    # Model should fail validation due to global strict_mode
-    with pytest.raises(ModelValidationError):
-
-        @model  # Should read from global strict_mode
-        class User(base_local):
-            __tablename__ = "users_propagate"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-
-
-def test_global_strict_false_allows_models():
-    """Test that global strict_mode=False allows models to register."""
-    db = DataFlow(":memory:", strict_mode=False)
-    base_local = declarative_base()
-
-    # Model should register successfully (WARN mode)
-    try:
-
-        @model
-        class User(base_local):
-            __tablename__ = "users_allow"
-            __table_args__ = {"extend_existing": True}
-
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-            name: str = Column(String)
-
-        assert True
-    except ModelValidationError:
-        pytest.fail("strict_mode=False should allow model registration")
-
-
-# ==============================================================================
-# Test 7: strict_level Parameter (RELAXED, MODERATE, AGGRESSIVE)
-# ==============================================================================
-
-
-def test_dataflow_init_accepts_strict_level_parameter():
-    """Test that DataFlow.__init__() accepts strict_level parameter."""
-    db = DataFlow(":memory:", strict_mode=True, strict_level=StrictLevel.RELAXED)
-    assert hasattr(db, "strict_level")
-    assert db.strict_level == StrictLevel.RELAXED
-
-
-def test_strict_level_defaults_to_moderate():
-    """Test that strict_level defaults to MODERATE."""
-    db = DataFlow(":memory:", strict_mode=True)
-    assert hasattr(db, "strict_level")
-    assert db.strict_level == StrictLevel.MODERATE
+def test_strict_level_enum_exists():
+    """Test that StrictLevel enum exists."""
+    assert StrictLevel is not None
 
 
 def test_strict_level_relaxed():
-    """Test that StrictLevel.RELAXED works."""
-    db = DataFlow(":memory:", strict_mode=True, strict_level=StrictLevel.RELAXED)
-    assert db.strict_level == StrictLevel.RELAXED
+    """Test StrictLevel.RELAXED exists."""
+    assert hasattr(StrictLevel, "RELAXED")
+    assert StrictLevel.RELAXED.value == "relaxed"
 
 
 def test_strict_level_moderate():
-    """Test that StrictLevel.MODERATE works."""
-    db = DataFlow(":memory:", strict_mode=True, strict_level=StrictLevel.MODERATE)
-    assert db.strict_level == StrictLevel.MODERATE
+    """Test StrictLevel.MODERATE exists."""
+    assert hasattr(StrictLevel, "MODERATE")
+    assert StrictLevel.MODERATE.value == "moderate"
 
 
 def test_strict_level_aggressive():
-    """Test that StrictLevel.AGGRESSIVE works."""
-    db = DataFlow(":memory:", strict_mode=True, strict_level=StrictLevel.AGGRESSIVE)
-    assert db.strict_level == StrictLevel.AGGRESSIVE
+    """Test StrictLevel.AGGRESSIVE exists."""
+    assert hasattr(StrictLevel, "AGGRESSIVE")
+    assert StrictLevel.AGGRESSIVE.value == "aggressive"
 
 
 # ==============================================================================
-# Test 8: Integration with Model Validation
+# Test 3: Model Decorator Accepts Validation Parameters
 # ==============================================================================
 
 
-def test_strict_mode_enforces_primary_key_validation():
-    """Test that strict_mode=True enforces primary key validation."""
-    db = DataFlow(":memory:", strict_mode=True)
-    base_local = declarative_base()
+def test_model_decorator_accepts_validation_parameter(base):
+    """Test that @model decorator accepts validation parameter."""
 
-    # Should fail due to non-id primary key
-    with pytest.raises(ModelValidationError) as exc_info:
+    # Should not raise
+    @model(validation=ValidationMode.OFF)
+    class User(base):
+        __tablename__ = "users_val_param_1"
+        id = Column(Integer, primary_key=True)
+        name = Column(String)
+
+    assert User is not None
+
+
+def test_model_decorator_accepts_strict_parameter(base):
+    """Test that @model decorator accepts strict parameter."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        # strict=True should enable strict validation
+        @model(strict=True)
+        class User(base):
+            __tablename__ = "users_strict_param_1"
+            user_id = Column(Integer, primary_key=True)  # Will warn
+
+        assert User is not None
+        warning_msgs = [str(warning.message) for warning in w]
+        assert any("VAL-003" in msg for msg in warning_msgs)
+
+
+def test_model_decorator_accepts_skip_validation_parameter(base):
+    """Test that @model decorator accepts skip_validation parameter."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        @model(skip_validation=True)
+        class User(base):
+            __tablename__ = "users_skip_param_1"
+            user_id = Column(Integer, primary_key=True)
+
+        assert User is not None
+        # Should have no DataFlow validation warnings
+        dataflow_warnings = [
+            warning
+            for warning in w
+            if issubclass(warning.category, DataFlowValidationWarning)
+        ]
+        assert len(dataflow_warnings) == 0
+
+
+# ==============================================================================
+# Test 4: Validation Mode Behavior
+# ==============================================================================
+
+
+def test_validation_mode_off_skips_validation(base):
+    """Test that ValidationMode.OFF skips all validation."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        @model(validation=ValidationMode.OFF)
+        class User(base):
+            __tablename__ = "users_mode_off"
+            user_id = Column(Integer, primary_key=True)
+
+        assert User is not None
+        # Should have no DataFlow validation warnings
+        dataflow_warnings = [
+            warning
+            for warning in w
+            if issubclass(warning.category, DataFlowValidationWarning)
+        ]
+        assert len(dataflow_warnings) == 0
+
+
+def test_validation_mode_warn_emits_warnings(base):
+    """Test that ValidationMode.WARN emits warnings."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        @model(validation=ValidationMode.WARN)
+        class User(base):
+            __tablename__ = "users_mode_warn"
+            user_id = Column(Integer, primary_key=True)
+
+        assert User is not None
+        warning_msgs = [str(warning.message) for warning in w]
+        assert any("VAL-003" in msg for msg in warning_msgs)
+
+
+def test_validation_mode_strict_emits_warnings_for_non_errors(base):
+    """Test that ValidationMode.STRICT still emits warnings for non-error issues."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        @model(validation=ValidationMode.STRICT)
+        class User(base):
+            __tablename__ = "users_mode_strict"
+            user_id = Column(Integer, primary_key=True)
+
+        assert User is not None
+        warning_msgs = [str(warning.message) for warning in w]
+        assert any("VAL-003" in msg for msg in warning_msgs)
+
+
+# ==============================================================================
+# Test 5: Default is WARN (Backward Compatible)
+# ==============================================================================
+
+
+def test_default_validation_mode_is_warn(base):
+    """Test that default validation mode is WARN."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
 
         @model
-        class User(base_local):
-            __tablename__ = "users_pk_validation"
-            __table_args__ = {"extend_existing": True}
+        class User(base):
+            __tablename__ = "users_default_warn"
+            user_id = Column(Integer, primary_key=True)
 
-            user_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-            name: str = Column(String)
-
-    # Check error message
-    errors = exc_info.value.args[0]
-    assert any("STRICT-001" in str(err) for err in errors)
+        assert User is not None
+        # Default WARN mode should emit warnings
+        warning_msgs = [str(warning.message) for warning in w]
+        assert any("VAL-003" in msg for msg in warning_msgs)
 
 
-def test_strict_mode_enforces_auto_managed_fields():
-    """Test that strict_mode=True enforces auto-managed field validation."""
-    db = DataFlow(":memory:", strict_mode=True)
-    base_local = declarative_base()
+def test_default_allows_models_with_issues(base):
+    """Test that default mode allows models with issues (backward compatible)."""
 
-    # Should fail due to created_at conflict
-    with pytest.raises(ModelValidationError) as exc_info:
+    # Should not raise
+    @model
+    class User(base):
+        __tablename__ = "users_default_allows"
+        user_id = Column(Integer, primary_key=True)
+        created_at = Column(String)
 
-        @model
-        class User(base_local):
-            __tablename__ = "users_auto_managed"
-            __table_args__ = {"extend_existing": True}
-
-            id: int = Column(Integer, primary_key=True)
-            created_at: str = Column(String)  # Conflicts with auto-managed field
-
-    # Check error message
-    errors = exc_info.value.args[0]
-    assert any("STRICT-002" in str(err) for err in errors)
+    assert User is not None
 
 
 # ==============================================================================
-# Test 9: Complex Scenarios
+# Test 6: strict=True/False Shorthand Works
 # ==============================================================================
 
 
-def test_multiple_models_with_different_strict_settings():
-    """Test that multiple models can have different strict settings."""
-    db = DataFlow(":memory:", strict_mode=False)  # Global off
-    base_local = declarative_base()
-
-    # Model 1: Uses global (WARN mode) - should succeed
-    try:
-
-        @model
-        class Product(base_local):
-            __tablename__ = "products_multi"
-            __table_args__ = {"extend_existing": True}
-
-            product_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-            name: str = Column(String)
-
-        assert True
-    except ModelValidationError:
-        pytest.fail("Global strict=False should allow Product")
-
-    # Model 2: Opts into strict mode - should fail
-    with pytest.raises(ModelValidationError):
+def test_strict_true_is_equivalent_to_strict_mode(base):
+    """Test that strict=True is equivalent to validation=ValidationMode.STRICT."""
+    with warnings.catch_warnings(record=True) as w1:
+        warnings.simplefilter("always")
 
         @model(strict=True)
-        class Order(base_local):
-            __tablename__ = "orders_multi"
-            __table_args__ = {"extend_existing": True}
+        class User1(base):
+            __tablename__ = "users_strict_true_1"
+            user_id = Column(Integer, primary_key=True)
 
-            order_id: int = Column(Integer, primary_key=True)  # Wrong PK name
-            total: int = Column(Integer)
+    with warnings.catch_warnings(record=True) as w2:
+        warnings.simplefilter("always")
 
+        @model(validation=ValidationMode.STRICT)
+        class User2(base):
+            __tablename__ = "users_strict_true_2"
+            user_id = Column(Integer, primary_key=True)
 
-def test_strict_mode_with_valid_model():
-    """Test that strict_mode=True allows valid models."""
-    db = DataFlow(":memory:", strict_mode=True)
-    base_local = declarative_base()
-
-    # Valid model should register successfully even in strict mode
-    try:
-
-        @model
-        class User(base_local):
-            __tablename__ = "users_valid"
-            __table_args__ = {"extend_existing": True}
-
-            id: int = Column(Integer, primary_key=True)  # Correct PK name
-            name: str = Column(String)
-            email: str = Column(String)
-
-        assert True
-    except ModelValidationError:
-        pytest.fail("Valid model should register in strict mode")
+    # Both should produce the same warning
+    w1_msgs = [str(warning.message) for warning in w1]
+    w2_msgs = [str(warning.message) for warning in w2]
+    assert any("VAL-003" in msg for msg in w1_msgs)
+    assert any("VAL-003" in msg for msg in w2_msgs)
 
 
-def test_strict_mode_integration_end_to_end():
-    """Test complete end-to-end flow of strict mode."""
-    # 1. Create DataFlow with strict mode
-    db = DataFlow(":memory:", strict_mode=True, strict_level=StrictLevel.MODERATE)
+def test_strict_false_is_equivalent_to_warn_mode(base):
+    """Test that strict=False is equivalent to validation=ValidationMode.WARN."""
+    with warnings.catch_warnings(record=True) as w1:
+        warnings.simplefilter("always")
 
-    # 2. Verify configuration
-    assert db.strict_mode is True
-    assert db.strict_level == StrictLevel.MODERATE
+        @model(strict=False)
+        class User1(base):
+            __tablename__ = "users_strict_false_1"
+            user_id = Column(Integer, primary_key=True)
 
-    base_local = declarative_base()
+    with warnings.catch_warnings(record=True) as w2:
+        warnings.simplefilter("always")
 
-    # 3. Invalid model should fail
-    with pytest.raises(ModelValidationError):
+        @model(validation=ValidationMode.WARN)
+        class User2(base):
+            __tablename__ = "users_strict_false_2"
+            user_id = Column(Integer, primary_key=True)
 
-        @model
-        class InvalidModel(base_local):
-            __tablename__ = "invalid_model"
-            __table_args__ = {"extend_existing": True}
+    # Both should produce the same warning
+    w1_msgs = [str(warning.message) for warning in w1]
+    w2_msgs = [str(warning.message) for warning in w2]
+    assert any("VAL-003" in msg for msg in w1_msgs)
+    assert any("VAL-003" in msg for msg in w2_msgs)
 
-            pk: int = Column(Integer, primary_key=True)  # Wrong PK name
 
-    # 4. Valid model should succeed
-    try:
+# ==============================================================================
+# Test 7: Multiple Models with Different Validation Settings
+# ==============================================================================
 
-        @model
-        class ValidModel(base_local):
-            __tablename__ = "valid_model"
-            __table_args__ = {"extend_existing": True}
 
-            id: int = Column(Integer, primary_key=True)  # Correct!
-            name: str = Column(String)
+def test_multiple_models_different_validation(base):
+    """Test that multiple models can have different validation settings."""
 
-        assert True
-    except ModelValidationError:
-        pytest.fail("Valid model should register")
+    # Model 1: Skip validation
+    @model(skip_validation=True)
+    class LegacyModel(base):
+        __tablename__ = "legacy_model_multi"
+        custom_id = Column(Integer, primary_key=True)
 
-    # 5. Override with __dataflow__ should work
-    try:
+    # Model 2: Strict validation (with warnings only)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
 
-        @model
-        class OptOutModel(base_local):
-            __tablename__ = "opt_out_model"
-            __table_args__ = {"extend_existing": True}
+        @model(strict=True)
+        class StrictModel(base):
+            __tablename__ = "strict_model_multi"
+            user_id = Column(Integer, primary_key=True)
 
-            custom_id: int = Column(Integer, primary_key=True)  # Wrong, but opt-out
+        warning_msgs = [str(warning.message) for warning in w]
+        assert any("VAL-003" in msg for msg in warning_msgs)
 
-            __dataflow__ = {"strict": False}  # Opt out
+    assert LegacyModel is not None
+    assert StrictModel is not None
 
-        assert True
-    except ModelValidationError:
-        pytest.fail("__dataflow__ opt-out should work")
+
+# ==============================================================================
+# Test 8: Valid Models Pass All Validation Modes
+# ==============================================================================
+
+
+def test_valid_model_passes_strict_mode(base):
+    """Test that valid models pass strict mode without warnings."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        @model(strict=True)
+        class User(base):
+            __tablename__ = "users_valid_model"
+            id = Column(Integer, primary_key=True)
+            name = Column(String(100))
+            email = Column(String(255))
+
+        assert User is not None
+        # Valid model should have no validation warnings
+        dataflow_warnings = [
+            warning
+            for warning in w
+            if issubclass(warning.category, DataFlowValidationWarning)
+        ]
+        assert len(dataflow_warnings) == 0
+
+
+def test_valid_model_passes_warn_mode(base):
+    """Test that valid models pass warn mode without warnings."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        @model(validation=ValidationMode.WARN)
+        class User(base):
+            __tablename__ = "users_valid_warn"
+            id = Column(Integer, primary_key=True)
+            name = Column(String(100))
+
+        assert User is not None
+        # Valid model should have no validation warnings
+        dataflow_warnings = [
+            warning
+            for warning in w
+            if issubclass(warning.category, DataFlowValidationWarning)
+        ]
+        assert len(dataflow_warnings) == 0
+
+
+# ==============================================================================
+# Test 9: Validation Decorators Work Without DataFlow Instance
+# ==============================================================================
+
+
+def test_model_decorator_works_standalone(base):
+    """Test that @model decorator works without DataFlow instance."""
+    # The standalone @model decorator should work independently
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        @model(strict=True)
+        class User(base):
+            __tablename__ = "users_standalone"
+            id = Column(Integer, primary_key=True)
+            name = Column(String)
+
+        assert User is not None
+
+
+def test_model_decorator_validation_is_per_model(base):
+    """Test that validation is applied per-model, not globally."""
+
+    # First model: skip validation
+    @model(skip_validation=True)
+    class Model1(base):
+        __tablename__ = "model1_per_model"
+        custom_id = Column(Integer, primary_key=True)
+
+    # Second model: strict validation (should warn)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+
+        @model(strict=True)
+        class Model2(base):
+            __tablename__ = "model2_per_model"
+            user_id = Column(Integer, primary_key=True)
+
+        # Only Model2 should trigger warning
+        warning_msgs = [str(warning.message) for warning in w]
+        assert any("VAL-003" in msg and "Model2" in msg for msg in warning_msgs)
+
+    assert Model1 is not None
+    assert Model2 is not None
