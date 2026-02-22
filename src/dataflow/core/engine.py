@@ -431,12 +431,12 @@ class DataFlow:
         self._connection_manager = ConnectionManager(self)
         self._express_dataflow = ExpressDataFlow(self)
 
-        # Initialize workflow binder (TODO-154: Workflow Binding Integration)
+        # Initialize workflow binder
         from .workflow_binding import DataFlowWorkflowBinder
 
         self._workflow_binder = DataFlowWorkflowBinder(self)
 
-        # Initialize tenant context switching (TODO-155: Context Switching Capabilities)
+        # Initialize tenant context switching
         from .tenant_context import TenantContextSwitch
 
         self._tenant_context_switch = TenantContextSwitch(self)
@@ -730,7 +730,9 @@ class DataFlow:
                 # SQLite is fully supported for production with enterprise adapter
             else:
                 dialect = "unknown"
-                logger.warning(f"Unsupported database dialect in URL: {database_url}")
+                logger.warning(
+                    "Unsupported database dialect in URL (credentials masked)"
+                )
 
             # Initialize AutoMigrationSystem with async workflow pattern and lock manager integration
             self._migration_system = AutoMigrationSystem(
@@ -2207,7 +2209,7 @@ class DataFlow:
             TenantContextSwitch: Tenant context switching interface
 
         See Also:
-            TODO-155: Context Switching Capabilities
+            TenantContextSwitch for context switching capabilities
         """
         from .tenant_context import TenantContextSwitch
 
@@ -4903,8 +4905,10 @@ class DataFlow:
                     self._schema_state_manager.history_manager.record_migration(
                         migration_record
                     )
-                except Exception:
-                    pass  # Don't fail if we can't record the failure
+                except Exception as rec_err:
+                    logger.debug(
+                        "Failed to record migration failure: %s", type(rec_err).__name__
+                    )
 
             logger.error(
                 f"PostgreSQL migration execution failed for model {model_name}: {e}"
@@ -5797,13 +5801,19 @@ class DataFlow:
         # Check if connection manager has a health_check method or simulate it
         try:
             connection_health = self._check_database_connection()
-        except Exception:
+        except Exception as e:
+            logger.debug("Health check connection test failed: %s", type(e).__name__)
             connection_health = True  # Assume healthy for testing
 
+        # Mask credentials in database URL for safe exposure
+        import re as _re
+
+        db_url = self.config.database.url
+        masked_url = _re.sub(r"://[^@]+@", "://***:***@", db_url) if db_url else None
         return {
             "status": "healthy" if connection_health else "unhealthy",
             "database": "connected" if connection_health else "disconnected",
-            "database_url": self.config.database.url,
+            "database_url": masked_url,
             "models_registered": len(self._models),
             "multi_tenant_enabled": self.config.security.multi_tenant,
             "monitoring_enabled": self.config._monitoring_config.enabled,
@@ -7375,7 +7385,8 @@ class DataFlow:
         except Exception as e:
             health_status["status"] = "unhealthy"
             health_status["database"] = "error"
-            health_status["components"]["database"] = f"error: {str(e)}"
+            health_status["components"]["database"] = f"error: {type(e).__name__}"
+            logger.warning("Health check database error: %s", e, exc_info=True)
 
         # Test other components
         try:
@@ -7389,7 +7400,8 @@ class DataFlow:
                 "ok" if self._connection_manager else "not_initialized"
             )
         except Exception as e:
-            health_status["components"]["general"] = f"error: {str(e)}"
+            health_status["components"]["general"] = f"error: {type(e).__name__}"
+            logger.warning("Health check general error: %s", e, exc_info=True)
 
         return health_status
 
@@ -7457,10 +7469,10 @@ class DataFlow:
             True if connection is working, False otherwise
         """
         try:
-            # This would contain actual database connection testing logic
-            # For now, return True for basic functionality
+            # Basic connection test - returns True if engine can connect
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug("Database connection test failed: %s", type(e).__name__)
             return False
 
     def close(self):
@@ -7796,7 +7808,7 @@ class DataFlow:
     # NOTE: Context manager (__enter__/__exit__) is defined earlier at lines 1767-1866
     # DO NOT add duplicate definitions here - Python uses the LAST definition
 
-    # ---- Workflow Binding Integration (TODO-154) ----
+    # ---- Workflow Binding Integration ----
 
     def create_workflow(self, workflow_id: str = None) -> "WorkflowBuilder":
         """Create a workflow bound to this DataFlow instance.

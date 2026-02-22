@@ -1,5 +1,24 @@
 # DataFlow Changelog
 
+## [0.12.1] - 2026-02-22
+
+### V4 Audit Hardening Patch
+
+Post-release reliability hardening from V4 final audit.
+
+### Fixed
+
+- **Health Check Error Sanitization**: Health endpoint error responses use `type(e).__name__` instead of raw `str(e)` to prevent internal detail leakage
+- **DB URL Credential Masking**: Health check masks database credentials in URL before including in response
+- **Engine Silent Swallows**: 3 bare `except: pass` blocks in engine.py replaced with `logger.debug()` calls
+- **Transaction Node Cleanup Logging**: 2 cleanup-after-failure silent swallows now log at debug level
+- **Migration API Introspection**: 9 silent exception swallows in schema introspection (PK, FK, index, unique constraints) now log at debug level
+- **Debug Data Structures**: 2 silent swallows in cached solution loading now log at debug level
+
+### Test Results
+
+- DataFlow: 794 passed
+
 ## [0.12.0] - 2026-02-21
 
 ### Quality Milestone Release - V4 Audit Cleared

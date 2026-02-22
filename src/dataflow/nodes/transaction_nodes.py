@@ -214,8 +214,11 @@ class TransactionCommitNode(AsyncNode):
             try:
                 if txn_ctx is not None:
                     await txn_ctx.__aexit__(type(e), e, e.__traceback__)
-            except Exception:
-                pass
+            except Exception as cleanup_err:
+                logger.debug(
+                    "Cleanup after commit failure also failed: %s",
+                    type(cleanup_err).__name__,
+                )
             self.set_workflow_context("active_transaction", None)
             self.set_workflow_context("transaction_context_manager", None)
             raise NodeExecutionError(f"Failed to commit transaction: {e}") from e
@@ -284,8 +287,11 @@ class TransactionRollbackNode(AsyncNode):
             try:
                 if txn_ctx is not None:
                     await txn_ctx.__aexit__(type(e), e, e.__traceback__)
-            except Exception:
-                pass
+            except Exception as cleanup_err:
+                logger.debug(
+                    "Cleanup after rollback failure also failed: %s",
+                    type(cleanup_err).__name__,
+                )
             self.set_workflow_context("active_transaction", None)
             self.set_workflow_context("transaction_context_manager", None)
             raise NodeExecutionError(f"Failed to rollback transaction: {e}") from e

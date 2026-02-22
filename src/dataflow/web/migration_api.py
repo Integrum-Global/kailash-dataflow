@@ -149,7 +149,12 @@ class WebMigrationAPI:
                 try:
                     pk_constraint = inspector.get_pk_constraint(table_name)
                     pk_columns = pk_constraint.get("constrained_columns", [])
-                except Exception:
+                except Exception as e:
+                    logger.debug(
+                        "PK introspection failed for %s: %s",
+                        table_name,
+                        type(e).__name__,
+                    )
                     pk_columns = []
 
                 # Get unique constraints
@@ -158,7 +163,12 @@ class WebMigrationAPI:
                     unique_columns = set()
                     for uc in unique_constraints:
                         unique_columns.update(uc.get("column_names", []))
-                except Exception:
+                except Exception as e:
+                    logger.debug(
+                        "Unique constraint introspection failed for %s: %s",
+                        table_name,
+                        type(e).__name__,
+                    )
                     unique_columns = set()
 
                 # Get foreign key info
@@ -171,7 +181,12 @@ class WebMigrationAPI:
                             ref_cols = fk.get("referred_columns", [])
                             if ref_cols:
                                 fk_info[col] = f"{ref_table}({ref_cols[0]})"
-                except Exception:
+                except Exception as e:
+                    logger.debug(
+                        "FK introspection failed for %s: %s",
+                        table_name,
+                        type(e).__name__,
+                    )
                     fk_info = {}
 
                 # Process columns
@@ -198,8 +213,12 @@ class WebMigrationAPI:
                                 "unique": idx.get("unique", False),
                             }
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        "Index introspection failed for %s: %s",
+                        table_name,
+                        type(e).__name__,
+                    )
 
                 schema_data["tables"][table_name] = table_info
 
@@ -749,7 +768,12 @@ class WebMigrationAPI:
                 # Gather indexes for this table
                 try:
                     indexes = inspector.get_indexes(table_name)
-                except Exception:
+                except Exception as e:
+                    logger.debug(
+                        "Index introspection failed for %s: %s",
+                        table_name,
+                        type(e).__name__,
+                    )
                     indexes = []
 
                 indexed_columns = set()
@@ -771,7 +795,12 @@ class WebMigrationAPI:
                     pk_columns = pk_constraint.get("constrained_columns", [])
                     if pk_columns:
                         tables_with_pk += 1
-                except Exception:
+                except Exception as e:
+                    logger.debug(
+                        "PK introspection failed for %s: %s",
+                        table_name,
+                        type(e).__name__,
+                    )
                     pk_columns = []
 
                 # Check foreign keys and whether they are indexed
@@ -796,8 +825,12 @@ class WebMigrationAPI:
                                         "recommendation": "Add index for join performance",
                                     }
                                 )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        "FK introspection failed for %s: %s",
+                        table_name,
+                        type(e).__name__,
+                    )
 
             # Calculate performance score (0-100)
             # Component 1: FK index coverage (50 points max)
@@ -911,9 +944,8 @@ class WebMigrationAPI:
                         column_removals += 1
                     elif "drop_table" in op_value:
                         table_drops += 1
-            except Exception:
-                # If we cannot build a preview, continue with spec-level analysis
-                pass
+            except Exception as e:
+                logger.debug("Migration preview build failed: %s", type(e).__name__)
 
         # Calculate estimated improvement based on operation types
         # Index additions improve performance, removals degrade it
@@ -1209,8 +1241,10 @@ class WebMigrationAPI:
         try:
             schema = self.inspect_schema()
             tables_available = set(schema.get("tables", {}).keys())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(
+                "Schema inspection for dependency analysis failed: %s", type(e).__name__
+            )
 
         dependency_chain = []
 

@@ -9,7 +9,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="kailash-dataflow",
-    version="0.12.0",
+    version="0.12.1",
     author="Integrum",
     author_email="info@integrum.global",
     description="Workflow-native database framework for Kailash SDK",
@@ -31,7 +31,7 @@ setup(
     ],
     python_requires=">=3.11",
     install_requires=[
-        "kailash>=0.12.0",
+        "kailash>=0.12.1",
         "sqlalchemy>=2.0.0",
         "alembic>=1.12.0",
         "asyncpg>=0.28.0",  # PostgreSQL async driver

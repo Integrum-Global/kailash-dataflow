@@ -13,9 +13,12 @@ Classes:
 - SolutionFeedback: Feedback for a single solution
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -297,8 +300,11 @@ class KnowledgeBase:
                     )
                     for s in solutions_data
                 ]
-            except (json.JSONDecodeError, KeyError):
-                pass
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.debug(
+                    "Failed to load cached solutions from database: %s",
+                    type(e).__name__,
+                )
 
         return conn
 
@@ -338,7 +344,8 @@ class KnowledgeBase:
             # Cache in memory
             self.patterns[pattern_key] = solutions
             return solutions
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.debug("Failed to query cached solutions: %s", type(e).__name__)
             return None
 
     def _insert_database(
