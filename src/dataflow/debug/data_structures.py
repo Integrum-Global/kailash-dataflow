@@ -238,15 +238,150 @@ class KnowledgeBase:
                 solution.effectiveness_score = effectiveness
 
     def _init_database(self):
-        """Initialize persistent SQLite database (future implementation)."""
-        raise NotImplementedError("Persistent storage not implemented in Phase 1")
+        """Initialize persistent SQLite database for cross-session learning."""
+        import json
+        import sqlite3
+
+        db_path = self._get_db_path()
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS solution_rankings (
+                pattern_key TEXT PRIMARY KEY,
+                solutions_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS solution_feedback (
+                pattern_key TEXT NOT NULL,
+                solution_index INTEGER NOT NULL,
+                feedback_type TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            )
+        """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_feedback_pattern
+            ON solution_feedback(pattern_key)
+        """
+        )
+        conn.commit()
+
+        # Also maintain in-memory cache for fast lookups
+        self.patterns: Dict[str, List[RankedSolution]] = {}
+        self.feedback: Dict[str, FeedbackData] = {}
+
+        # Load existing data into memory
+        cursor = conn.execute(
+            "SELECT pattern_key, solutions_json FROM solution_rankings"
+        )
+        for row in cursor:
+            try:
+                solutions_data = json.loads(row[1])
+                self.patterns[row[0]] = [
+                    RankedSolution(
+                        solution=ErrorSolution(
+                            description=s["description"],
+                            code_template=s["code_template"],
+                            auto_fixable=s["auto_fixable"],
+                            priority=s["priority"],
+                        ),
+                        relevance_score=s["relevance_score"],
+                        reasoning=s["reasoning"],
+                        confidence=s["confidence"],
+                        effectiveness_score=s.get("effectiveness_score", 0.0),
+                    )
+                    for s in solutions_data
+                ]
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        return conn
 
     def _query_database(self, pattern_key: str) -> Optional[List[RankedSolution]]:
-        """Query persistent database (future implementation)."""
-        raise NotImplementedError("Persistent storage not implemented in Phase 1")
+        """Query persistent database for cached rankings."""
+        # Check in-memory cache first
+        if pattern_key in self.patterns:
+            return self.patterns[pattern_key]
+
+        import json
+
+        cursor = self.db.execute(
+            "SELECT solutions_json FROM solution_rankings WHERE pattern_key = ?",
+            (pattern_key,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        try:
+            solutions_data = json.loads(row[0])
+            solutions = [
+                RankedSolution(
+                    solution=ErrorSolution(
+                        description=s["description"],
+                        code_template=s["code_template"],
+                        auto_fixable=s["auto_fixable"],
+                        priority=s["priority"],
+                    ),
+                    relevance_score=s["relevance_score"],
+                    reasoning=s["reasoning"],
+                    confidence=s["confidence"],
+                    effectiveness_score=s.get("effectiveness_score", 0.0),
+                )
+                for s in solutions_data
+            ]
+            # Cache in memory
+            self.patterns[pattern_key] = solutions
+            return solutions
+        except (json.JSONDecodeError, KeyError):
+            return None
 
     def _insert_database(
         self, pattern_key: str, ranked_solutions: List[RankedSolution]
     ):
-        """Insert into persistent database (future implementation)."""
-        raise NotImplementedError("Persistent storage not implemented in Phase 1")
+        """Insert or update rankings in persistent database."""
+        import json
+
+        solutions_data = [
+            {
+                "description": s.solution.description,
+                "code_template": s.solution.code_template,
+                "auto_fixable": s.solution.auto_fixable,
+                "priority": s.solution.priority,
+                "relevance_score": s.relevance_score,
+                "reasoning": s.reasoning,
+                "confidence": s.confidence,
+                "effectiveness_score": s.effectiveness_score,
+            }
+            for s in ranked_solutions
+        ]
+
+        now = datetime.utcnow().isoformat()
+        self.db.execute(
+            """INSERT OR REPLACE INTO solution_rankings
+               (pattern_key, solutions_json, updated_at)
+               VALUES (?, ?, ?)""",
+            (pattern_key, json.dumps(solutions_data), now),
+        )
+        self.db.commit()
+
+        # Update in-memory cache
+        self.patterns[pattern_key] = ranked_solutions
+
+    @staticmethod
+    def _get_db_path() -> str:
+        """Get path for the persistent SQLite database."""
+        import os
+
+        # Use XDG data dir or home directory
+        data_dir = os.environ.get(
+            "DATAFLOW_DATA_DIR",
+            os.path.join(os.path.expanduser("~"), ".dataflow"),
+        )
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, "debug_knowledge.db")

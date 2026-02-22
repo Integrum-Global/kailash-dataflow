@@ -406,6 +406,73 @@ class NodeGenerator:
                 self._test_context = test_context
                 super().__init__(**kwargs)
 
+            def _apply_tenant_isolation(self, query: str, params: list) -> tuple:
+                """Apply tenant isolation to a SQL query if tenant context is active.
+
+                Checks the current tenant context (via contextvars) and, if a tenant
+                is active and the model has a tenant_id field, uses QueryInterceptor
+                to inject tenant conditions into DML queries. DDL operations bypass
+                tenant isolation.
+
+                Args:
+                    query: The SQL query string
+                    params: The query parameters list
+
+                Returns:
+                    Tuple of (modified_query, modified_params) with tenant conditions
+                    injected, or the original (query, params) if no tenant context
+                    is active or the model is not tenant-aware.
+                """
+                import logging
+
+                _logger = logging.getLogger(__name__)
+
+                # Check for active tenant context
+                from .tenant_context import get_current_tenant_id
+
+                tenant_id = get_current_tenant_id()
+                if not tenant_id:
+                    return query, params
+
+                # Check if this model has a tenant_id field (auto-detect tenant tables)
+                if "tenant_id" not in self.model_fields:
+                    return query, params
+
+                # DDL operations bypass tenant isolation
+                query_upper = query.strip().upper()
+                if query_upper.startswith(("CREATE ", "ALTER ", "DROP ")):
+                    return query, params
+
+                # Get the table name for this model
+                table_name = self.dataflow_instance._get_table_name(self.model_name)
+
+                # Use QueryInterceptor to inject tenant conditions
+                try:
+                    from ..tenancy.interceptor import QueryInterceptor
+
+                    interceptor = QueryInterceptor(
+                        tenant_id=tenant_id,
+                        tenant_tables=[table_name],
+                        tenant_column="tenant_id",
+                    )
+                    modified_query, modified_params = (
+                        interceptor.inject_tenant_conditions(query, params)
+                    )
+                    _logger.debug(
+                        f"Tenant isolation applied: tenant_id={tenant_id}, "
+                        f"table={table_name}, original_query={query[:80]}..."
+                    )
+                    return modified_query, modified_params
+                except Exception as e:
+                    _logger.error(
+                        f"Failed to apply tenant isolation for {self.model_name}: {e}. "
+                        f"Refusing to execute unfiltered query — potential cross-tenant data leak."
+                    )
+                    raise RuntimeError(
+                        f"Tenant isolation failed for {self.model_name}: {e}. "
+                        f"Cannot proceed without tenant filtering."
+                    ) from e
+
             def validate_inputs(self, **kwargs) -> Dict[str, Any]:
                 """Override validate_inputs to add SQL injection protection for DataFlow nodes.
 
@@ -1178,11 +1245,9 @@ class NodeGenerator:
                             f"TDD mode: Using test connection for {operation} operation"
                         )
 
-                # Apply tenant filtering if multi-tenant mode
-                if self.dataflow_instance.config.security.multi_tenant:
-                    tenant_id = self.dataflow_instance._tenant_context.get("tenant_id")
-                    if tenant_id and "filter" in kwargs:
-                        kwargs["filter"]["tenant_id"] = tenant_id
+                # Tenant filtering is now applied at the SQL level via
+                # _apply_tenant_isolation() which uses QueryInterceptor and the
+                # contextvars-based tenant context (TenantContextSwitch).
 
                 # Execute database operations using DataFlow components
                 # ADR-002: Changed from WARNING to DEBUG - this is diagnostic tracing
@@ -1390,6 +1455,11 @@ class NodeGenerator:
                         # This ensures SQLite :memory: databases share the same connection
                         sql_node = self.dataflow_instance._get_or_create_async_sql_node(
                             database_type
+                        )
+
+                        # Apply tenant isolation to the query
+                        query, serialized_values = self._apply_tenant_isolation(
+                            query, serialized_values
                         )
 
                         # Execute the async node properly in async context
@@ -1742,9 +1812,15 @@ class NodeGenerator:
                         database_type
                     )
 
+                    # Apply tenant isolation to the query
+                    read_params = [record_id]
+                    query, read_params = self._apply_tenant_isolation(
+                        query, read_params
+                    )
+
                     result = await sql_node.async_run(
                         query=query,
-                        params=[record_id],
+                        params=read_params,
                         fetch_mode="one",
                         validate_queries=False,
                         transaction_mode="auto",  # Ensure auto-commit for read operations
@@ -2129,6 +2205,10 @@ class NodeGenerator:
                         sql_node = self.dataflow_instance._get_or_create_async_sql_node(
                             database_type
                         )
+
+                        # Apply tenant isolation to the query
+                        query, values = self._apply_tenant_isolation(query, values)
+
                         result = await sql_node.async_run(
                             query=query,
                             params=values,
@@ -2310,9 +2390,16 @@ class NodeGenerator:
                     sql_node = self.dataflow_instance._get_or_create_async_sql_node(
                         database_type
                     )
+
+                    # Apply tenant isolation to the query
+                    delete_params = [record_id]
+                    query, delete_params = self._apply_tenant_isolation(
+                        query, delete_params
+                    )
+
                     result = await sql_node.async_run(
                         query=query,
-                        params=[record_id],
+                        params=delete_params,
                         fetch_mode="one",
                         validate_queries=False,
                         transaction_mode="auto",  # Ensure auto-commit for delete operations
@@ -2533,6 +2620,9 @@ class NodeGenerator:
                                     "select_with_pagination"
                                 ].format(limit="?", offset="?")
                             params = [limit, offset]
+
+                    # Apply tenant isolation to the query before it's captured by the closure
+                    query, params = self._apply_tenant_isolation(query, params)
 
                     # Define executor function for cache integration
                     async def execute_query():
@@ -2852,6 +2942,12 @@ class NodeGenerator:
                         check_where_str = " AND ".join(check_where_clauses)
 
                         check_query = f"SELECT COUNT(*) as count FROM {table_name} WHERE {check_where_str}"
+
+                        # Apply tenant isolation to the pre-check query
+                        check_query, check_params = self._apply_tenant_isolation(
+                            check_query, check_params
+                        )
+
                         check_result = await sql_node.async_run(
                             query=check_query,
                             params=check_params,
@@ -2889,6 +2985,9 @@ class NodeGenerator:
 
                     # BUG #515 FIX: Serialize dict/list for SQL parameter binding
                     params = self._serialize_params_for_sql(params)
+
+                    # Apply tenant isolation to the upsert query
+                    query, params = self._apply_tenant_isolation(query, params)
 
                     # Execute query using SQLExecutorNode (following existing pattern)
                     if database_type.lower() != "sqlite":
@@ -3067,6 +3166,9 @@ class NodeGenerator:
                     logger.debug(f"Count operation - Executing query: {query}")
                     logger.debug(f"Count operation - With params: {params}")
                     logger.debug(f"Count operation - Database type: {db_type}")
+
+                    # Apply tenant isolation to the count query
+                    query, params = self._apply_tenant_isolation(query, params)
 
                     # Execute SQL query
                     sql_node = self.dataflow_instance._get_or_create_async_sql_node(

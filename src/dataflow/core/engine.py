@@ -1374,6 +1374,23 @@ class DataFlow:
         """Get field information for a model."""
         return self._model_fields.get(model_name, {})
 
+    def get_tenant_tables(self) -> List[str]:
+        """Get list of table names for models that have a tenant_id field.
+
+        Auto-detects tenant-aware tables by checking if each registered model
+        has a 'tenant_id' field. This is used by the QueryInterceptor to
+        determine which tables need tenant isolation.
+
+        Returns:
+            List of table names that require tenant isolation.
+        """
+        tenant_tables = []
+        for model_name, fields in self._model_fields.items():
+            if "tenant_id" in fields:
+                table_name = self._get_table_name(model_name)
+                tenant_tables.append(table_name)
+        return tenant_tables
+
     def get_type_processor(self, model_name: str):
         """Get a TypeAwareFieldProcessor for the given model.
 
@@ -2356,7 +2373,7 @@ class DataFlow:
                 scheme = (
                     database_url.split("://")[0] if "://" in database_url else "unknown"
                 )
-            except:
+            except Exception:
                 scheme = "unknown"
 
             # Enhanced error with catalog-based solutions (DF-501)
@@ -4159,7 +4176,7 @@ class DataFlow:
                 scheme = (
                     database_url.split("://")[0] if "://" in database_url else "unknown"
                 )
-            except:
+            except Exception:
                 scheme = "unknown"
             logger.warning(
                 f"Unknown database type '{scheme}' for model {model_name}. "
@@ -4886,7 +4903,7 @@ class DataFlow:
                     self._schema_state_manager.history_manager.record_migration(
                         migration_record
                     )
-                except:
+                except Exception:
                     pass  # Don't fail if we can't record the failure
 
             logger.error(
@@ -5780,7 +5797,7 @@ class DataFlow:
         # Check if connection manager has a health_check method or simulate it
         try:
             connection_health = self._check_database_connection()
-        except:
+        except Exception:
             connection_health = True  # Assume healthy for testing
 
         return {

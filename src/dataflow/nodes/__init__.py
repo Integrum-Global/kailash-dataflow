@@ -17,6 +17,8 @@ from .smart_operations import SmartMergeNode
 from .transaction_nodes import (
     TransactionCommitNode,
     TransactionRollbackNode,
+    TransactionRollbackToSavepointNode,
+    TransactionSavepointNode,
     TransactionScopeNode,
 )
 from .vector_nodes import CreateVectorIndexNode, HybridSearchNode, VectorSearchNode
@@ -29,6 +31,8 @@ __all__ = [
     "TransactionScopeNode",
     "TransactionCommitNode",
     "TransactionRollbackNode",
+    "TransactionSavepointNode",
+    "TransactionRollbackToSavepointNode",
     "SchemaModificationNode",
     "MigrationNode",
     "DataFlowConnectionManager",

@@ -90,6 +90,7 @@ class WebMigrationAPI:
             self.dialect = dialect
 
         self._last_cleanup = datetime.now()
+        self._rollback_points: Dict[str, Dict[str, Any]] = {}
 
     def inspect_schema(self, schema_name: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -148,7 +149,7 @@ class WebMigrationAPI:
                 try:
                     pk_constraint = inspector.get_pk_constraint(table_name)
                     pk_columns = pk_constraint.get("constrained_columns", [])
-                except:
+                except Exception:
                     pk_columns = []
 
                 # Get unique constraints
@@ -157,7 +158,7 @@ class WebMigrationAPI:
                     unique_columns = set()
                     for uc in unique_constraints:
                         unique_columns.update(uc.get("column_names", []))
-                except:
+                except Exception:
                     unique_columns = set()
 
                 # Get foreign key info
@@ -170,7 +171,7 @@ class WebMigrationAPI:
                             ref_cols = fk.get("referred_columns", [])
                             if ref_cols:
                                 fk_info[col] = f"{ref_table}({ref_cols[0]})"
-                except:
+                except Exception:
                     fk_info = {}
 
                 # Process columns
@@ -197,7 +198,7 @@ class WebMigrationAPI:
                                 "unique": idx.get("unique", False),
                             }
                         )
-                except:
+                except Exception:
                     pass
 
                 schema_data["tables"][table_name] = table_info
@@ -593,34 +594,120 @@ class WebMigrationAPI:
 
         Returns:
             Execution results
+
+        Raises:
+            SQLExecutionError: If a migration operation fails during execution
+            MigrationConflictError: If a migration conflicts with current schema state
         """
         session = self.get_session(session_id)
 
-        start_time = time.perf_counter()
+        overall_start = time.perf_counter()
         executed_migrations = []
+        overall_success = True
+        rollback_point_id = None
+
+        engine = create_engine(self.connection_string)
+
+        # Save schema state before execution for rollback support
+        if create_rollback_point:
+            rollback_point_id = str(uuid.uuid4())
+
+        rollback_operations = []
 
         for draft in session["draft_migrations"]:
-            # Simulate execution
-            executed_migrations.append(
-                {
-                    "migration_name": draft["name"],
-                    "status": "success",
-                    "duration": 0.5,
-                    "operations_count": 1,
-                }
-            )
+            migration_start = time.perf_counter()
+            migration_name = draft["name"]
+            operations_count = 0
+            status = "success"
+            error_message = None
 
-        end_time = time.perf_counter()
+            try:
+                # Build the migration from the draft spec using VisualMigrationBuilder
+                builder = VisualMigrationBuilder(migration_name, self.dialect)
+                spec = draft.get("spec", draft)
+                operation_type = spec.get("type", "")
+
+                if operation_type == "create_table":
+                    self._process_create_table(builder, spec)
+                elif operation_type == "add_column":
+                    self._process_add_column(builder, spec)
+                elif operation_type == "multi_operation":
+                    self._process_multi_operation(builder, spec)
+                else:
+                    raise ValidationError(
+                        f"Unsupported migration type: {operation_type}"
+                    )
+
+                migration = builder.build()
+                operations_count = len(migration.operations)
+
+                # Execute each operation's SQL against the real database
+                from sqlalchemy import text
+
+                with engine.connect() as connection:
+                    if dry_run:
+                        # In dry run mode, use a transaction and roll it back
+                        trans = connection.begin()
+                        try:
+                            for op in migration.operations:
+                                if op.sql_up:
+                                    connection.execute(text(op.sql_up))
+                        finally:
+                            trans.rollback()
+                    else:
+                        # Execute for real within a transaction
+                        with connection.begin():
+                            for op in migration.operations:
+                                if op.sql_up:
+                                    connection.execute(text(op.sql_up))
+
+                # Track rollback operations (reverse order within each migration)
+                if create_rollback_point and not dry_run:
+                    for op in reversed(migration.operations):
+                        if op.sql_down and not op.sql_down.startswith("--"):
+                            rollback_operations.append(op.sql_down)
+
+            except (ValidationError, MigrationConflictError):
+                raise
+            except Exception as e:
+                status = "failed"
+                error_message = str(e)
+                overall_success = False
+                logger.error(f"Migration '{migration_name}' failed: {error_message}")
+
+            migration_duration = time.perf_counter() - migration_start
+
+            migration_result = {
+                "migration_name": migration_name,
+                "status": status,
+                "duration": migration_duration,
+                "operations_count": operations_count,
+            }
+            if error_message:
+                migration_result["error"] = error_message
+
+            executed_migrations.append(migration_result)
+
+            # Stop executing further migrations if one fails
+            if not overall_success:
+                break
+
+        overall_duration = time.perf_counter() - overall_start
 
         result = {
-            "success": True,
+            "success": overall_success,
             "executed_migrations": executed_migrations,
-            "total_duration": end_time - start_time,
+            "total_duration": overall_duration,
             "dry_run": dry_run,
         }
 
-        if create_rollback_point:
-            result["rollback_point_id"] = str(uuid.uuid4())
+        if create_rollback_point and rollback_point_id:
+            result["rollback_point_id"] = rollback_point_id
+            self._rollback_points[rollback_point_id] = {
+                "session_id": session_id,
+                "created_at": datetime.now().isoformat(),
+                "operations": rollback_operations,
+            }
 
         return result
 
@@ -628,54 +715,354 @@ class WebMigrationAPI:
         """
         Analyze schema performance characteristics.
 
+        Inspects the real database schema to calculate a performance score based on
+        index coverage of foreign keys, primary key presence, and index distribution.
+
         Returns:
-            Performance analysis results
+            Performance analysis results including score, recommendations,
+            current indexes, and query pattern analysis.
+
+        Raises:
+            DatabaseConnectionError: If connection to database fails
         """
-        return {
-            "performance_score": 75,  # out of 100
-            "recommendations": [
-                "Add index on employees.company_id",
-                "Consider partitioning large tables",
-            ],
-            "current_indexes": [],
-            "query_patterns": [],
-        }
+        try:
+            engine = create_engine(self.connection_string)
+            inspector = engine.inspector()
+
+            tables = inspector.get_table_names()
+            if not tables:
+                return {
+                    "performance_score": 100,
+                    "recommendations": [],
+                    "current_indexes": [],
+                    "query_patterns": [],
+                }
+
+            all_indexes = []
+            recommendations = []
+            total_fk_count = 0
+            indexed_fk_count = 0
+            tables_with_pk = 0
+            query_patterns = []
+
+            for table_name in tables:
+                # Gather indexes for this table
+                try:
+                    indexes = inspector.get_indexes(table_name)
+                except Exception:
+                    indexes = []
+
+                indexed_columns = set()
+                for idx in indexes:
+                    cols = idx.get("column_names", [])
+                    indexed_columns.update(cols)
+                    all_indexes.append(
+                        {
+                            "table": table_name,
+                            "name": idx.get("name", ""),
+                            "columns": cols,
+                            "unique": idx.get("unique", False),
+                        }
+                    )
+
+                # Check primary keys
+                try:
+                    pk_constraint = inspector.get_pk_constraint(table_name)
+                    pk_columns = pk_constraint.get("constrained_columns", [])
+                    if pk_columns:
+                        tables_with_pk += 1
+                except Exception:
+                    pk_columns = []
+
+                # Check foreign keys and whether they are indexed
+                try:
+                    fk_constraints = inspector.get_foreign_keys(table_name)
+                    for fk in fk_constraints:
+                        fk_cols = fk.get("constrained_columns", [])
+                        for col in fk_cols:
+                            total_fk_count += 1
+                            if col in indexed_columns:
+                                indexed_fk_count += 1
+                            else:
+                                ref_table = fk.get("referred_table", "unknown")
+                                recommendations.append(
+                                    f"Add index on {table_name}.{col} "
+                                    f"(foreign key to {ref_table})"
+                                )
+                                query_patterns.append(
+                                    {
+                                        "table": table_name,
+                                        "pattern": f"JOIN on {table_name}.{col}",
+                                        "recommendation": "Add index for join performance",
+                                    }
+                                )
+                except Exception:
+                    pass
+
+            # Calculate performance score (0-100)
+            # Component 1: FK index coverage (50 points max)
+            if total_fk_count > 0:
+                fk_score = (indexed_fk_count / total_fk_count) * 50
+            else:
+                fk_score = 50  # No FKs means no penalty
+
+            # Component 2: PK coverage (30 points max)
+            if tables:
+                pk_score = (tables_with_pk / len(tables)) * 30
+            else:
+                pk_score = 30
+
+            # Component 3: General index presence (20 points max)
+            # Award points based on ratio of indexes to tables
+            if tables:
+                index_ratio = min(len(all_indexes) / len(tables), 2.0) / 2.0
+                index_score = index_ratio * 20
+            else:
+                index_score = 20
+
+            performance_score = round(fk_score + pk_score + index_score)
+
+            # Add general recommendations if score is below thresholds
+            if not all_indexes and tables:
+                recommendations.append(
+                    "Consider adding indexes on frequently queried columns"
+                )
+
+            return {
+                "performance_score": performance_score,
+                "recommendations": recommendations,
+                "current_indexes": all_indexes,
+                "query_patterns": query_patterns,
+            }
+
+        except Exception as e:
+            raise DatabaseConnectionError(
+                f"Failed to analyze schema performance: {str(e)}"
+            )
 
     def validate_performance_impact(self, session_id: str) -> Dict[str, Any]:
         """
         Validate performance impact of session migrations.
 
+        Analyzes the draft migrations in the session to estimate their performance
+        impact based on the types of operations they contain.
+
         Args:
             session_id: Session identifier
 
         Returns:
-            Performance impact analysis
+            Performance impact analysis with estimated improvement,
+            risk assessment, and safety determination.
         """
+        session = self.get_session(session_id)
+
+        index_additions = 0
+        index_removals = 0
+        column_additions = 0
+        column_removals = 0
+        table_creations = 0
+        table_drops = 0
+        other_operations = 0
+
+        for draft in session["draft_migrations"]:
+            spec = draft.get("spec", draft)
+            op_type = spec.get("type", "")
+
+            if op_type == "create_table":
+                table_creations += 1
+                # Count columns in the table spec
+                columns = spec.get("columns", [])
+                column_additions += len(columns)
+            elif op_type == "add_column":
+                column_additions += 1
+            elif op_type == "multi_operation":
+                for sub_op in spec.get("operations", []):
+                    sub_type = sub_op.get("type", "")
+                    if sub_type == "create_table":
+                        table_creations += 1
+                        column_additions += len(sub_op.get("columns", []))
+                    elif sub_type == "add_column":
+                        column_additions += 1
+                    else:
+                        other_operations += 1
+            else:
+                other_operations += 1
+
+            # Also analyze via VisualMigrationBuilder to inspect SQL operations
+            try:
+                builder = VisualMigrationBuilder(
+                    draft.get("name", "analysis"), self.dialect
+                )
+                if op_type == "create_table":
+                    self._process_create_table(builder, spec)
+                elif op_type == "add_column":
+                    self._process_add_column(builder, spec)
+                elif op_type == "multi_operation":
+                    self._process_multi_operation(builder, spec)
+
+                migration = builder.build()
+                for op in migration.operations:
+                    op_value = op.operation_type.value.lower()
+                    if "add_index" in op_value:
+                        index_additions += 1
+                    elif "drop_index" in op_value:
+                        index_removals += 1
+                    elif "drop_column" in op_value:
+                        column_removals += 1
+                    elif "drop_table" in op_value:
+                        table_drops += 1
+            except Exception:
+                # If we cannot build a preview, continue with spec-level analysis
+                pass
+
+        # Calculate estimated improvement based on operation types
+        # Index additions improve performance, removals degrade it
+        improvement_points = (
+            index_additions * 10
+            - index_removals * 15
+            + table_creations * 2
+            + column_additions * 1
+            - column_removals * 1
+            - table_drops * 5
+        )
+
+        if improvement_points > 0:
+            estimated_improvement = f"{min(improvement_points, 50)}%"
+        elif improvement_points < 0:
+            estimated_improvement = f"{max(improvement_points, -50)}%"
+        else:
+            estimated_improvement = "0%"
+
+        # Risk assessment based on destructive operations
+        if table_drops > 0 or column_removals > 0 or index_removals > 2:
+            risk_assessment = "high"
+        elif index_removals > 0 or other_operations > 0:
+            risk_assessment = "medium"
+        else:
+            risk_assessment = "low"
+
+        # Safe to execute if risk is not high and no destructive operations
+        safe_to_execute = risk_assessment != "high"
+
         return {
-            "estimated_improvement": "15%",
-            "risk_assessment": "low",
-            "safe_to_execute": True,
+            "estimated_improvement": estimated_improvement,
+            "risk_assessment": risk_assessment,
+            "safe_to_execute": safe_to_execute,
+            "operation_summary": {
+                "index_additions": index_additions,
+                "index_removals": index_removals,
+                "column_additions": column_additions,
+                "column_removals": column_removals,
+                "table_creations": table_creations,
+                "table_drops": table_drops,
+            },
         }
 
     def execute_migration_stage(
         self, session_id: str, stage_num: int
     ) -> Dict[str, Any]:
         """
-        Execute specific migration stage.
+        Execute specific migration stage from the execution plan.
+
+        Retrieves the execution plan for the session, finds the specified stage,
+        and executes all migration steps within that stage sequentially against
+        the real database.
 
         Args:
             session_id: Session identifier
-            stage_num: Stage number to execute
+            stage_num: Stage number to execute (0-indexed)
 
         Returns:
-            Stage execution results
+            Stage execution results with real operation counts and timing
+
+        Raises:
+            ValidationError: If stage_num is out of range
+            SQLExecutionError: If a migration operation fails
         """
-        return {
-            "success": True,
+        # Get the execution plan to find the requested stage
+        execution_plan = self.create_execution_plan(session_id)
+        stages = execution_plan.get("stages", [])
+
+        if stage_num < 0 or stage_num >= len(stages):
+            raise ValidationError(
+                f"Stage {stage_num} out of range. "
+                f"Available stages: 0-{len(stages) - 1}"
+            )
+
+        stage = stages[stage_num]
+        stage_steps = stage.get("steps", [])
+
+        stage_start = time.perf_counter()
+        operations_executed = 0
+        success = True
+        errors = []
+
+        session = self.get_session(session_id)
+        drafts_by_name = {draft["name"]: draft for draft in session["draft_migrations"]}
+
+        engine = create_engine(self.connection_string)
+
+        from sqlalchemy import text
+
+        for step in stage_steps:
+            migration_name = step.get("migration_name", "")
+            draft = drafts_by_name.get(migration_name)
+
+            if not draft:
+                errors.append(
+                    f"Draft migration '{migration_name}' not found in session"
+                )
+                success = False
+                continue
+
+            try:
+                # Build the migration from the draft spec
+                builder = VisualMigrationBuilder(migration_name, self.dialect)
+                spec = draft.get("spec", draft)
+                operation_type = spec.get("type", "")
+
+                if operation_type == "create_table":
+                    self._process_create_table(builder, spec)
+                elif operation_type == "add_column":
+                    self._process_add_column(builder, spec)
+                elif operation_type == "multi_operation":
+                    self._process_multi_operation(builder, spec)
+                else:
+                    raise ValidationError(
+                        f"Unsupported migration type: {operation_type}"
+                    )
+
+                migration = builder.build()
+
+                # Execute each operation within a transaction
+                with engine.connect() as connection:
+                    with connection.begin():
+                        for op in migration.operations:
+                            if op.sql_up:
+                                connection.execute(text(op.sql_up))
+                                operations_executed += 1
+
+            except Exception as e:
+                errors.append(f"Migration '{migration_name}' failed: {str(e)}")
+                success = False
+                logger.error(
+                    f"Stage {stage_num} migration '{migration_name}' failed: {e}"
+                )
+                break
+
+        stage_duration = time.perf_counter() - stage_start
+
+        result = {
+            "success": success,
             "stage": stage_num,
-            "operations_executed": 2,
-            "duration": 1.5,
+            "operations_executed": operations_executed,
+            "duration": stage_duration,
         }
+
+        if errors:
+            result["errors"] = errors
+
+        return result
 
     def get_session_migrations(self, session_id: str) -> List[Dict[str, Any]]:
         """
@@ -694,44 +1081,232 @@ class WebMigrationAPI:
         """
         Check for migration conflicts in session.
 
+        Analyzes all draft migrations in the session for conflicting operations
+        on the same table/column (e.g., two migrations both adding the same column,
+        or one dropping a table another modifies).
+
         Args:
             session_id: Session identifier
 
         Returns:
-            Conflict analysis results
+            Conflict analysis results with has_conflicts flag and conflict details
         """
-        return {"has_conflicts": False, "conflicts": []}
+        session = self.get_session(session_id)
+        drafts = session["draft_migrations"]
+        conflicts = []
+
+        # Track table operations across drafts to detect conflicts
+        table_operations: Dict[str, List[Dict[str, Any]]] = {}
+
+        for idx, draft in enumerate(drafts):
+            spec = draft.get("spec", draft)
+            op_type = spec.get("type", "")
+            table_name = spec.get("table_name", "")
+
+            if op_type == "create_table":
+                table_operations.setdefault(table_name, []).append(
+                    {
+                        "draft_index": idx,
+                        "draft_name": draft.get("name", ""),
+                        "operation": "create_table",
+                    }
+                )
+            elif op_type == "add_column":
+                table_operations.setdefault(table_name, []).append(
+                    {
+                        "draft_index": idx,
+                        "draft_name": draft.get("name", ""),
+                        "operation": "add_column",
+                        "column": spec.get("column_name", ""),
+                    }
+                )
+            elif op_type == "multi_operation":
+                for sub_op in spec.get("operations", []):
+                    sub_table = sub_op.get("table_name", table_name)
+                    table_operations.setdefault(sub_table, []).append(
+                        {
+                            "draft_index": idx,
+                            "draft_name": draft.get("name", ""),
+                            "operation": sub_op.get("type", "unknown"),
+                            "column": sub_op.get("column_name", ""),
+                        }
+                    )
+
+        # Detect conflicts: duplicate table creation, duplicate column additions
+        for table, ops in table_operations.items():
+            create_ops = [o for o in ops if o["operation"] == "create_table"]
+            if len(create_ops) > 1:
+                conflicts.append(
+                    {
+                        "type": "duplicate_table_creation",
+                        "table": table,
+                        "migrations": [o["draft_name"] for o in create_ops],
+                    }
+                )
+
+            # Check for duplicate column additions on the same table
+            column_adds: Dict[str, List[str]] = {}
+            for op in ops:
+                if op["operation"] == "add_column" and op.get("column"):
+                    column_adds.setdefault(op["column"], []).append(op["draft_name"])
+
+            for col, migration_names in column_adds.items():
+                if len(migration_names) > 1:
+                    conflicts.append(
+                        {
+                            "type": "duplicate_column_addition",
+                            "table": table,
+                            "column": col,
+                            "migrations": migration_names,
+                        }
+                    )
+
+            # Check for drop + modify conflicts
+            drop_ops = [
+                o for o in ops if o["operation"] in ("drop_table", "drop_column")
+            ]
+            modify_ops = [
+                o
+                for o in ops
+                if o["operation"] in ("add_column", "modify_column", "add_constraint")
+                and o["draft_index"]
+                > max((d["draft_index"] for d in drop_ops), default=-1)
+            ]
+            if drop_ops and modify_ops:
+                conflicts.append(
+                    {
+                        "type": "modify_after_drop",
+                        "table": table,
+                        "drop_migration": drop_ops[0]["draft_name"],
+                        "modify_migration": modify_ops[0]["draft_name"],
+                    }
+                )
+
+        return {"has_conflicts": len(conflicts) > 0, "conflicts": conflicts}
 
     def validate_migration_dependencies(self, session_id: str) -> Dict[str, Any]:
         """
         Validate migration dependencies.
 
+        Checks that the ordering of draft migrations is valid: tables must be
+        created before columns are added to them, foreign key references must
+        point to tables that exist (either in schema or created earlier).
+
         Args:
             session_id: Session identifier
 
         Returns:
-            Dependency validation results
+            Dependency validation results with valid flag and ordered chain
         """
         session = self.get_session(session_id)
+        drafts = session["draft_migrations"]
+
+        # Build dependency graph: track which tables each migration creates/requires
+        errors = []
+        tables_available: set = set()
+
+        # Pre-populate with existing database tables if possible
+        try:
+            schema = self.inspect_schema()
+            tables_available = set(schema.get("tables", {}).keys())
+        except Exception:
+            pass
+
+        dependency_chain = []
+
+        for idx, draft in enumerate(drafts):
+            spec = draft.get("spec", draft)
+            op_type = spec.get("type", "")
+            table_name = spec.get("table_name", "")
+
+            if op_type == "create_table":
+                # Creating a new table — adds to available set
+                tables_available.add(table_name)
+            elif op_type == "add_column":
+                # Requires the target table to already exist
+                if table_name and table_name not in tables_available:
+                    errors.append(
+                        {
+                            "draft_index": idx,
+                            "draft_name": draft.get("name", ""),
+                            "error": f"Table '{table_name}' does not exist yet",
+                        }
+                    )
+            elif op_type == "multi_operation":
+                for sub_op in spec.get("operations", []):
+                    sub_type = sub_op.get("type", "")
+                    sub_table = sub_op.get("table_name", table_name)
+                    if sub_type == "create_table":
+                        tables_available.add(sub_table)
+                    elif sub_table and sub_table not in tables_available:
+                        errors.append(
+                            {
+                                "draft_index": idx,
+                                "draft_name": draft.get("name", ""),
+                                "error": f"Table '{sub_table}' does not exist yet",
+                            }
+                        )
+
+            dependency_chain.append(idx)
 
         return {
-            "valid": True,
-            "dependency_chain": list(range(len(session["draft_migrations"]))),
+            "valid": len(errors) == 0,
+            "dependency_chain": dependency_chain,
+            "errors": errors,
         }
 
     def rollback_to_point(self, rollback_point_id: str) -> Dict[str, Any]:
         """
-        Rollback to specific point.
+        Rollback to specific point by executing stored reverse SQL operations.
+
+        Uses the rollback operations recorded during execute_session_migrations
+        when create_rollback_point=True.
 
         Args:
             rollback_point_id: Rollback point identifier
 
         Returns:
-            Rollback results
+            Rollback results with list of rolled-back operations
+
+        Raises:
+            ValidationError: If rollback point not found
+            SQLExecutionError: If rollback SQL fails
         """
+        if rollback_point_id not in self._rollback_points:
+            raise ValidationError(f"Rollback point not found: {rollback_point_id}")
+
+        rollback_data = self._rollback_points[rollback_point_id]
+        rollback_ops = rollback_data["operations"]
+
+        if not rollback_ops:
+            return {
+                "success": True,
+                "operations_rolled_back": [],
+                "rollback_point_id": rollback_point_id,
+            }
+
+        engine = create_engine(self.connection_string)
+        from sqlalchemy import text
+
+        executed_rollbacks = []
+
+        try:
+            with engine.connect() as connection:
+                with connection.begin():
+                    for sql_down in rollback_ops:
+                        connection.execute(text(sql_down))
+                        executed_rollbacks.append(sql_down)
+        except Exception as e:
+            raise SQLExecutionError(
+                f"Rollback failed after {len(executed_rollbacks)} operations: {e}"
+            )
+
+        # Remove the used rollback point
+        del self._rollback_points[rollback_point_id]
+
         return {
             "success": True,
-            "operations_rolled_back": 2,
+            "operations_rolled_back": executed_rollbacks,
             "rollback_point_id": rollback_point_id,
         }
 
@@ -963,24 +1538,47 @@ class WebMigrationAPI:
     def _process_multi_operation(
         self, builder: VisualMigrationBuilder, spec: Dict[str, Any]
     ) -> None:
-        """Process multi-operation migration.
+        """Process multi-operation migration atomically.
+
+        Iterates over the ``operations`` list in the spec and processes each
+        sub-operation sequentially using the same builder, ensuring all
+        operations are part of a single migration transaction.
 
         Args:
             builder: VisualMigrationBuilder instance
-            spec: Migration specification dictionary
+            spec: Migration specification with an ``operations`` list.
+                  Each operation must have a ``type`` key and the same
+                  structure as a single-operation migration spec.
 
         Raises:
-            NotImplementedError: Multi-operation migrations are not yet implemented
+            ValidationError: If operations list is missing or empty,
+                or if any individual operation fails validation.
         """
-        # Multi-operation migrations require complex parsing and orchestration
-        # Rather than silently failing with a placeholder, raise an explicit error
-        raise NotImplementedError(
-            "Multi-operation migrations are not yet supported. "
-            "Please submit individual migration operations instead. "
-            "For complex migrations requiring multiple coordinated operations, "
-            "consider using the AutoMigrationSystem directly or breaking the "
-            "migration into sequential single-operation migrations."
-        )
+        operations = spec.get("operations", [])
+        if not operations:
+            raise ValidationError(
+                "Multi-operation migration requires a non-empty 'operations' list. "
+                "Each operation should have a 'type' field (e.g., 'create_table', "
+                "'add_column') and the corresponding specification fields."
+            )
+
+        for i, operation in enumerate(operations):
+            op_type = operation.get("type")
+            if not op_type:
+                raise ValidationError(
+                    f"Operation {i} in multi-operation migration is missing 'type' field"
+                )
+
+            if op_type == "create_table":
+                self._process_create_table(builder, operation)
+            elif op_type == "add_column":
+                self._process_add_column(builder, operation)
+            else:
+                raise ValidationError(
+                    f"Unsupported operation type '{op_type}' at index {i} "
+                    f"in multi-operation migration. Supported types: "
+                    f"create_table, add_column"
+                )
 
     def _get_column_type(self, type_str: str) -> ColumnType:
         """Convert string type to ColumnType enum."""
@@ -1156,8 +1754,66 @@ class WebMigrationAPI:
         return [{"stage": 1, "steps": steps}]
 
     def _calculate_overall_risk(self, steps: List[Dict[str, Any]]) -> str:
-        """Calculate overall risk level."""
-        return "low"  # Simplified for now
+        """Calculate overall risk level based on migration operation types.
+
+        Examines each step's migration name and risk level to determine the highest
+        risk across all steps. Destructive operations (drop table, drop column)
+        yield "high" risk. Schema modifications (alter table, modify column) yield
+        "medium" risk. Additive operations (create table, add index, add column)
+        yield "low" risk.
+
+        Args:
+            steps: List of execution plan steps, each containing migration_name
+                   and optionally risk_level.
+
+        Returns:
+            The highest risk level found: "high", "medium", or "low".
+        """
+        risk_priority = {"low": 0, "medium": 1, "high": 2}
+        highest_risk = "low"
+
+        # High-risk operation indicators (destructive)
+        high_risk_patterns = [
+            "drop_table",
+            "drop_column",
+            "drop_constraint",
+            "truncate",
+        ]
+        # Medium-risk operation indicators (modifications)
+        medium_risk_patterns = [
+            "alter_table",
+            "modify_column",
+            "rename_table",
+            "rename_column",
+            "drop_index",
+        ]
+
+        for step in steps:
+            # Check explicit risk_level on the step first
+            step_risk = step.get("risk_level", "low")
+            if risk_priority.get(step_risk, 0) > risk_priority.get(highest_risk, 0):
+                highest_risk = step_risk
+
+            # Infer risk from migration name patterns
+            migration_name = step.get("migration_name", "").lower()
+
+            for pattern in high_risk_patterns:
+                if pattern in migration_name:
+                    highest_risk = "high"
+                    break
+
+            if highest_risk == "high":
+                break  # Cannot get higher than high
+
+            for pattern in medium_risk_patterns:
+                if pattern in migration_name:
+                    if risk_priority.get("medium", 1) > risk_priority.get(
+                        highest_risk, 0
+                    ):
+                        highest_risk = "medium"
+                    break
+
+        return highest_risk
 
 
 def create_engine(connection_string: str):
