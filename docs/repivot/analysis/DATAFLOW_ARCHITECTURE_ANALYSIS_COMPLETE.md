@@ -9,13 +9,16 @@
 ## Executive Summary
 
 ### Current State
+
 - **Lines of Code**: 5,404 (engine.py) + 2,902 (nodes.py) + 98,632 (auto_migration_system.py) = ~107K+ LOC
 - **Complexity**: 8 migration engines, 51 migration modules, 9 auto-generated nodes per model
 - **Failure Modes**: 15+ documented critical issues requiring token-intensive debugging
 - **Token Exhaustion**: Average 40K-60K tokens per debugging cycle for complex issues
 
 ### Core Problem
+
 **DataFlow is architecturally sound but experientially complex**. The framework works correctly when configured properly, but the path from "I want to do X" to "It works" requires navigating:
+
 - 24+ configuration parameters
 - 3 execution modes (auto_migrate, existing_schema_mode, enable_model_persistence)
 - 8 migration subsystems
@@ -32,6 +35,7 @@
 #### DataFlow Engine (core/engine.py - 5,404 lines)
 
 **Primary Responsibilities**:
+
 1. **Database Connection Management** (Lines 34-213)
    - URL parsing and validation
    - Connection pool initialization
@@ -51,7 +55,7 @@
    - Multi-instance isolation
 
 4. **Feature Module Initialization** (Lines 263-298)
-   - NodeGenerator (9 nodes per model)
+   - NodeGenerator (11 nodes per model)
    - BulkOperations
    - TransactionManager
    - ConnectionManager
@@ -67,6 +71,7 @@
    - Context-aware schema operations
 
 **Critical Design Pattern**:
+
 ```python
 # Synchronous model registration
 @db.model  # <- Immediate registration in memory
@@ -82,6 +87,7 @@ runtime.execute(workflow.build())  # <- Tables created here if needed
 #### Node Generator (core/nodes.py - 2,902 lines)
 
 **Node Generation Process**:
+
 ```
 1. Model Registration (@db.model decorator)
    ↓
@@ -101,6 +107,7 @@ runtime.execute(workflow.build())  # <- Tables created here if needed
 ```
 
 **Generated Nodes (9 per model)**:
+
 1. **{Model}CreateNode** (Lines 1046-1184)
    - Single record insertion
    - Datetime auto-conversion (ISO 8601 → datetime)
@@ -146,6 +153,7 @@ runtime.execute(workflow.build())  # <- Tables created here if needed
    - Custom conflict_on parameter (v0.8.0+)
 
 **Critical Node Coupling**:
+
 ```python
 class DataFlowNode(AsyncNode):
     def __init__(self, **kwargs):
@@ -157,6 +165,7 @@ class DataFlowNode(AsyncNode):
 ```
 
 **This coupling enables**:
+
 - Database URL inheritance
 - Connection pool sharing
 - Multi-instance isolation
@@ -208,6 +217,7 @@ class DataFlowNode(AsyncNode):
    - Performance regression detection
 
 **Migration Execution Flow**:
+
 ```
 1. Model Registration
    ↓
@@ -233,6 +243,7 @@ class DataFlowNode(AsyncNode):
 ### 1.2 @db.model Decorator Deep Dive
 
 **Implementation Flow**:
+
 ```python
 # Step 1: Decorator Application
 @db.model
@@ -249,7 +260,7 @@ def model(self, cls: Type) -> Type:
     self._models[cls.__name__] = cls
     self._model_fields[cls.__name__] = fields
 
-    # C. Node Generation (9 nodes)
+    # C. Node Generation (11 nodes)
     crud_nodes = self._node_generator.generate_crud_nodes(cls.__name__, fields)
     bulk_nodes = self._node_generator.generate_bulk_nodes(cls.__name__, fields)
 
@@ -268,6 +279,7 @@ def model(self, cls: Type) -> Type:
 ```
 
 **Field Introspection Process**:
+
 ```python
 def _introspect_model_fields(self, cls: Type) -> Dict[str, Any]:
     """Extract field metadata from model class."""
@@ -294,6 +306,7 @@ def _introspect_model_fields(self, cls: Type) -> Dict[str, Any]:
 ```
 
 **Critical Behaviors**:
+
 1. **Synchronous Registration**: Model registration is immediate and synchronous
 2. **Deferred Table Creation**: Tables created lazily during workflow execution
 3. **Instance Coupling**: Generated nodes capture parent DataFlow instance in closure
@@ -306,6 +319,7 @@ def _introspect_model_fields(self, cls: Type) -> Dict[str, Any]:
 **Solution (v0.7.5)**: Deferred migration system with lazy table creation.
 
 **Current Flow**:
+
 ```
 @db.model Registration (Synchronous)
   ├── Field introspection
@@ -324,6 +338,7 @@ First Workflow Execution (Async)
 ```
 
 **Schema Cache (ADR-001)**:
+
 ```python
 # Thread-safe table existence cache
 class SchemaCache:
@@ -347,11 +362,13 @@ class SchemaCache:
 ```
 
 **Performance Impact**:
+
 - **First operation**: ~1500ms (cache miss + table creation)
 - **Subsequent operations**: ~1ms (cache hit)
 - **Improvement**: 91-99% performance gain for multi-operation workflows
 
 **Failure Modes**:
+
 1. **Cache invalidation issues**: Manual schema changes outside DataFlow don't invalidate cache
 2. **Multi-instance cache pollution**: Different DataFlow instances share class-level cache (fixed in v0.7.5)
 3. **Event loop closure**: LocalRuntime creates new event loop per execute() call (pending fix in v0.10.1)
@@ -361,6 +378,7 @@ class SchemaCache:
 **Three Parameter Passing Mechanisms**:
 
 1. **Direct Parameters** (Simple values)
+
 ```python
 workflow.add_node("UserCreateNode", "create", {
     "id": "user-123",
@@ -370,6 +388,7 @@ workflow.add_node("UserCreateNode", "create", {
 ```
 
 2. **Workflow Connections** (Dynamic values)
+
 ```python
 workflow.add_node("PythonCodeNode", "prepare", {
     "code": "user_id = 'user-456'"
@@ -379,6 +398,7 @@ workflow.add_connection("prepare", "user_id", "read", "id")
 ```
 
 3. **Nexus Template Syntax** (Runtime substitution - NEXUS ONLY)
+
 ```python
 # ONLY in Nexus context, NOT in DataFlow workflows
 nexus_workflow.add_node("UserCreateNode", "create", {
@@ -388,6 +408,7 @@ nexus_workflow.add_node("UserCreateNode", "create", {
 ```
 
 **Common Confusion**:
+
 ```python
 # ❌ WRONG: Template syntax in DataFlow workflow
 workflow.add_node("OrderCreateNode", "create", {
@@ -399,6 +420,7 @@ workflow.add_connection("create_customer", "id", "create_order", "customer_id")
 ```
 
 **Parameter Validation Flow**:
+
 ```python
 # In generated node (nodes.py:228-356)
 def validate_inputs(self, **kwargs) -> Dict[str, Any]:
@@ -423,6 +445,7 @@ def validate_inputs(self, **kwargs) -> Dict[str, Any]:
 ### 1.5 Connection Patterns
 
 **DataFlow Node → DataFlow Node**:
+
 ```python
 workflow.add_node("UserCreateNode", "create_user", {
     "name": "Alice"
@@ -432,6 +455,7 @@ workflow.add_connection("create_user", "id", "create_session", "user_id")
 ```
 
 **DataFlow Node → Core SDK Node**:
+
 ```python
 workflow.add_node("UserListNode", "list_users", {
     "filter": {"active": True}
@@ -443,6 +467,7 @@ workflow.add_connection("list_users", "records", "process", "users")
 ```
 
 **Core SDK Node → DataFlow Node**:
+
 ```python
 workflow.add_node("PythonCodeNode", "prepare", {
     "code": """
@@ -460,6 +485,7 @@ workflow.add_connection("prepare", "user_data.email", "create", "email")
 ```
 
 **Critical Connection Rules**:
+
 1. **Dot notation works**: Access nested fields with `output.field.subfield`
 2. **Type preservation**: String IDs, datetime objects preserved through connections
 3. **Auto-managed fields skip**: Don't connect created_at/updated_at (auto-set)
@@ -468,6 +494,7 @@ workflow.add_connection("prepare", "user_data.email", "create", "email")
 ### 1.6 Runtime Execution Flow
 
 **LocalRuntime Execution** (CURRENT - v0.9.x):
+
 ```python
 def execute(self, workflow, **kwargs):
     # 1. Emit deprecation warning (v0.10.1+)
@@ -488,6 +515,7 @@ def execute(self, workflow, **kwargs):
 ```
 
 **AsyncLocalRuntime Execution** (ALTERNATIVE):
+
 ```python
 async def execute_workflow_async(self, workflow, inputs=None):
     # 1. Analyze workflow
@@ -509,6 +537,7 @@ async def execute_workflow_async(self, workflow, inputs=None):
 ```
 
 **DataFlow Node Execution**:
+
 ```python
 async def async_run(self, **kwargs) -> Dict[str, Any]:
     # 1. Get database connection info
@@ -548,6 +577,7 @@ async def async_run(self, **kwargs) -> Dict[str, Any]:
 **Documented**: `sdk-contributors/reports/issues/event-loop-closure/README.md`
 
 **Root Cause**:
+
 ```python
 # LocalRuntime.execute() creates NEW event loop each call
 runtime = LocalRuntime()
@@ -559,6 +589,7 @@ pool_key = f"{loop_id}|{database_url}"  # Changes between calls
 ```
 
 **Failure Scenario**:
+
 ```python
 db = DataFlow(":memory:")
 
@@ -579,18 +610,21 @@ runtime.execute(workflow2.build())  # FAILS: "no such table: User"
 ```
 
 **Why It Fails**:
+
 1. Workflow 1 creates table in Loop #1's connection pool
 2. Loop #1 closes after execution
 3. Workflow 2 creates Loop #2 with NEW pool
 4. NEW pool has no tables (different SQLite :memory: connection)
 
 **Impact**:
+
 - ❌ Sequential workflows fail
 - ❌ DataFlow operations crash on second workflow
 - ❌ 99% performance penalty (no cache hits)
 - ❌ Multi-operation patterns unusable
 
 **Workaround (Current)**:
+
 ```python
 # Use AsyncLocalRuntime instead
 runtime = AsyncLocalRuntime()
@@ -598,6 +632,7 @@ results, _ = await runtime.execute_workflow_async(workflow.build(), inputs={})
 ```
 
 **Permanent Fix (v0.10.1 - Pending)**:
+
 ```python
 # Persistent event loop across executions
 with LocalRuntime() as runtime:
@@ -606,6 +641,7 @@ with LocalRuntime() as runtime:
 ```
 
 **Token Cost**: 40K-60K tokens per debugging cycle (requires reading:
+
 - Engine implementation (5K lines)
 - Runtime implementation (2K lines)
 - AsyncSQL pooling logic (1K lines)
@@ -619,6 +655,7 @@ with LocalRuntime() as runtime:
 **Root Cause**: DataFlow nodes created NEW AsyncSQLDatabaseNode instances per execution, breaking connection pooling.
 
 **Failure Scenario**:
+
 ```python
 db = DataFlow(":memory:")
 
@@ -636,6 +673,7 @@ runtime.execute(workflow2.build())  # Creates SQLiteAdapter #2 (no shared state)
 ```
 
 **Fix (v0.7.5)**:
+
 ```python
 # Cache AsyncSQLDatabaseNode instances at DataFlow level
 class DataFlow:
@@ -660,6 +698,7 @@ class DataFlow:
 **Root Cause**: Schema cache doesn't detect external modifications
 
 **Failure Scenario**:
+
 ```python
 db = DataFlow("postgresql://...")
 
@@ -679,12 +718,14 @@ runtime.execute(workflow2.build())  # Returns records WITHOUT email field
 ```
 
 **Workaround**:
+
 ```python
 # Manual cache clear
 db._schema_cache.clear()
 ```
 
 **Ideal Solution**: Schema checksum validation
+
 ```python
 db = DataFlow(
     "postgresql://...",
@@ -696,16 +737,17 @@ db = DataFlow(
 
 **User Expectation vs Reality**:
 
-| User Expects (ORM Pattern) | DataFlow Reality (Workflow Pattern) |
-|----------------------------|-------------------------------------|
-| `User.objects.create(name="Alice")` | `workflow.add_node("UserCreateNode", ...)` |
-| `User.objects.filter(active=True)` | `workflow.add_node("UserListNode", {"filter": ...})` |
-| `user.save()` | `workflow.add_node("UserUpdateNode", ...)` |
-| `user.delete()` | `workflow.add_node("UserDeleteNode", ...)` |
-| Eager loading | Workflow connections |
-| Lazy evaluation | Workflow execution |
+| User Expects (ORM Pattern)          | DataFlow Reality (Workflow Pattern)                  |
+| ----------------------------------- | ---------------------------------------------------- |
+| `User.objects.create(name="Alice")` | `workflow.add_node("UserCreateNode", ...)`           |
+| `User.objects.filter(active=True)`  | `workflow.add_node("UserListNode", {"filter": ...})` |
+| `user.save()`                       | `workflow.add_node("UserUpdateNode", ...)`           |
+| `user.delete()`                     | `workflow.add_node("UserDeleteNode", ...)`           |
+| Eager loading                       | Workflow connections                                 |
+| Lazy evaluation                     | Workflow execution                                   |
 
 **Mental Model Gap**:
+
 ```python
 # ORM Mental Model (WRONG for DataFlow)
 user = User(name="Alice")  # Instance creation
@@ -722,12 +764,14 @@ runtime.execute(workflow.build())
 ```
 
 **Confusion Sources**:
+
 1. **@db.model looks like ORM**: Decorator syntax similar to Django/SQLAlchemy
 2. **Node names are object-like**: `UserCreateNode` suggests object method
 3. **No query builder**: Must use workflow nodes, not method chaining
 4. **Result access patterns**: Different from ORM queryset access
 
 **Documentation Improvements Needed**:
+
 - Clear "DataFlow vs ORM" comparison table
 - Workflow-first mental model diagrams
 - Migration guides from Django/SQLAlchemy
@@ -758,17 +802,20 @@ workflow.add_node("UserUpdateNode", "update", {
 ```
 
 **Why This Happens**:
+
 1. CreateNode and UpdateNode have **completely different** parameter structures
 2. No visual distinction in documentation
 3. Error messages don't explain the structural difference
 4. Users assume consistency across CRUD operations
 
 **Impact**:
+
 - 10-20 minutes average debugging time
 - Parameter validation errors are cryptic
 - Requires reading source code to understand
 
 **Better Error Message**:
+
 ```python
 ValueError: UserUpdateNode expects nested structure:
   {
@@ -814,6 +861,7 @@ workflow.add_node("UserUpdateNode", "update", {
 ```
 
 **Impact**:
+
 - 5-10 minutes average debugging time
 - Error message is now excellent (v0.7.x improvement)
 - Still happens frequently due to user habit
@@ -837,12 +885,14 @@ class User:
 ```
 
 **Why This Fails**:
+
 - DataFlow's generated nodes expect `id` field
 - No validation at model registration time
 - Fails during first CRUD operation
 - Error message doesn't mention naming requirement
 
 **Better Validation**:
+
 ```python
 # At model registration time
 def model(self, cls: Type) -> Type:
@@ -880,6 +930,7 @@ results = runtime.execute(workflow.build())
 **Problem**: Parameter validation happens at runtime, not build time
 
 **Better Validation**:
+
 - Build-time parameter checking
 - Required vs optional field detection from model
 - Clear error message with missing field list
@@ -905,6 +956,7 @@ workflow.add_node("UserCreateNode", "create", {
 **Problem**: Type validation happens at database level, not DataFlow level
 
 **Better Validation**:
+
 - Type checking against model annotations at build time
 - Automatic type coercion where safe (str → int)
 - Clear error message with expected vs actual type
@@ -914,12 +966,14 @@ workflow.add_node("UserCreateNode", "create", {
 **Rare but Critical**: Node generation can fail silently
 
 **Failure Scenarios**:
+
 1. **Circular imports**: Model imports cause cycle
 2. **Type annotation errors**: Invalid type hints crash introspection
 3. **Field name conflicts**: Reserved keywords as field names
 4. **Missing type hints**: Fields without annotations
 
 **Example**:
+
 ```python
 # Circular import
 # models/user.py
@@ -941,6 +995,7 @@ class Session:
 **Impact**: Nodes not generated, no error message
 
 **Better Handling**:
+
 - Detect circular imports at registration time
 - Validate type annotations before introspection
 - Log node generation success/failure
@@ -953,6 +1008,7 @@ class Session:
 **Symptom**: "Connection refused" or "Connection timeout"
 
 **Common Causes**:
+
 1. Database URL incorrect
 2. Database server not running
 3. Firewall blocking connection
@@ -961,6 +1017,7 @@ class Session:
 **Problem**: Error happens deep in execution stack, hard to trace
 
 **Better Error Handling**:
+
 ```python
 def __init__(self, database_url: str):
     try:
@@ -984,6 +1041,7 @@ def __init__(self, database_url: str):
 **Symptom**: Data inconsistencies in concurrent operations
 
 **Example**:
+
 ```python
 # Two workflows running concurrently
 workflow1.add_node("UserUpdateNode", "update1", {
@@ -1002,6 +1060,7 @@ workflow2.add_node("UserUpdateNode", "update2", {
 **Problem**: No explicit transaction control in basic API
 
 **Better API**:
+
 ```python
 workflow.add_node("TransactionScopeNode", "tx", {
     "isolation_level": "READ_COMMITTED"
@@ -1017,6 +1076,7 @@ workflow.add_connection("tx", "start", "update", "transaction")
 **Problem**: Different DataFlow instances sharing global state
 
 **Example**:
+
 ```python
 # Instance 1: Development
 db_dev = DataFlow(":memory:")
@@ -1037,6 +1097,7 @@ class User:  # Same name, different instance
 ```
 
 **Fix**: Instance-level node coupling
+
 ```python
 class DataFlowNode(AsyncNode):
     def __init__(self, **kwargs):
@@ -1048,11 +1109,13 @@ class DataFlowNode(AsyncNode):
 **Symptom**: Partial updates or data inconsistencies
 
 **Scenarios**:
+
 1. **No rollback on error**: Updates succeed before failure
 2. **Concurrent modification**: Lost update problem
 3. **Deadlock**: Two workflows waiting on each other
 
 **Example - No Rollback**:
+
 ```python
 workflow.add_node("UserCreateNode", "create_user", {...})
 workflow.add_node("SessionCreateNode", "create_session", {...})
@@ -1060,6 +1123,7 @@ workflow.add_node("SessionCreateNode", "create_session", {...})
 ```
 
 **Better Pattern**:
+
 ```python
 workflow.add_node("TransactionManagerNode", "tx", {
     "transaction_type": "saga",
@@ -1100,8 +1164,8 @@ workflow.add_node("TransactionManagerNode", "tx", {
    - Field type annotations
    - Optional vs required fields
    - Default values
-   - __dataflow__ metadata
-   - __indexes__ definitions
+   - **dataflow** metadata
+   - **indexes** definitions
 
 3. **Node Types (9 per model)**:
    - CreateNode vs UpdateNode parameter differences
@@ -1131,18 +1195,21 @@ workflow.add_node("TransactionManagerNode", "tx", {
 **Progressive Disclosure Problem**:
 
 DataFlow has 4 configuration levels:
+
 1. **Zero-config**: `DataFlow()` (uses defaults)
 2. **Basic**: `DataFlow(database_url="...")`
 3. **Production**: `DataFlow(database_url="...", pool_size=20, monitoring=True)`
 4. **Enterprise**: Full configuration with all features
 
 **But**:
+
 - No clear guidance on which level to use when
 - No validation of incompatible options
 - No warnings about performance implications
 - No progressive learning path
 
 **Example Confusion**:
+
 ```python
 # User tries enterprise features without understanding implications
 db = DataFlow(
@@ -1156,6 +1223,7 @@ db = DataFlow(
 ```
 
 **Better Approach**:
+
 ```python
 # Configuration profiles with validation
 db = DataFlow.development()  # Preset for local development
@@ -1190,6 +1258,7 @@ KeyError: 'filter'
 ```
 
 **Better Error Message Pattern**:
+
 ```python
 class DataFlowError(Exception):
     """Base error with context and suggestions."""
@@ -1249,6 +1318,7 @@ raise DataFlowError(
 **Why Debugging Is Hard**:
 
 1. **Deep Call Stacks**: Errors originate 10+ levels deep
+
    ```
    User code
    → WorkflowBuilder
@@ -1262,7 +1332,7 @@ raise DataFlowError(
    ```
 
 2. **State Distributed Across Components**:
-   - Model metadata in DataFlow._model_fields
+   - Model metadata in DataFlow.\_model_fields
    - Node classes in NodeRegistry (global)
    - Connection pools in AsyncSQLDatabaseNode (class-level)
    - Schema cache in SchemaCache (class-level)
@@ -1304,18 +1374,19 @@ db.inspect_pending_migrations()  # Returns migration queue
 
 **Minimal Context for Common Issues**:
 
-| Issue | Files to Read | Lines to Read | Estimated Time |
-|-------|---------------|---------------|----------------|
-| CreateNode vs UpdateNode | nodes.py | 500 lines | 30 min |
-| Auto-managed fields | nodes.py | 200 lines | 15 min |
-| Primary key naming | engine.py, nodes.py | 300 lines | 20 min |
-| Event loop closure | local.py, async_sql.py | 1000 lines | 2 hours |
-| Migration failures | auto_migration_system.py | 5000+ lines | 4+ hours |
-| Multi-instance isolation | engine.py, nodes.py | 800 lines | 1 hour |
+| Issue                    | Files to Read            | Lines to Read | Estimated Time |
+| ------------------------ | ------------------------ | ------------- | -------------- |
+| CreateNode vs UpdateNode | nodes.py                 | 500 lines     | 30 min         |
+| Auto-managed fields      | nodes.py                 | 200 lines     | 15 min         |
+| Primary key naming       | engine.py, nodes.py      | 300 lines     | 20 min         |
+| Event loop closure       | local.py, async_sql.py   | 1000 lines    | 2 hours        |
+| Migration failures       | auto_migration_system.py | 5000+ lines   | 4+ hours       |
+| Multi-instance isolation | engine.py, nodes.py      | 800 lines     | 1 hour         |
 
 **Total Context for Advanced Issues**: 10K+ lines, 8+ hours reading time
 
 **Why This Is Problematic**:
+
 - Average developer doesn't have time to read 10K lines
 - Context spans multiple files and architectural layers
 - No clear learning path from simple to complex
@@ -1390,6 +1461,7 @@ db.inspect_pending_migrations()  # Returns migration queue
 User doesn't understand DataFlow is workflow-based, not ORM.
 
 **Token Usage**:
+
 - Initial explanation: 5K tokens
 - Code examples: 5K tokens
 - Comparison tables: 3K tokens
@@ -1401,6 +1473,7 @@ User doesn't understand DataFlow is workflow-based, not ORM.
 User hits event loop closure bug.
 
 **Token Usage**:
+
 - Error analysis: 5K tokens
 - Read local.py: 5K tokens
 - Read async_sql.py: 5K tokens
@@ -1415,6 +1488,7 @@ User hits event loop closure bug.
 User's auto_migrate=True isn't working as expected.
 
 **Token Usage**:
+
 - Read migration_system docs: 10K tokens
 - Read auto_migration_system.py (partially): 20K tokens
 - Read risk_assessment docs: 5K tokens
@@ -1428,6 +1502,7 @@ User's auto_migrate=True isn't working as expected.
 User has multiple DataFlow instances with unexpected behavior.
 
 **Token Usage**:
+
 - Read engine.py: 15K tokens
 - Read nodes.py: 10K tokens
 - Read database-url-inheritance report: 5K tokens
@@ -1438,24 +1513,28 @@ User has multiple DataFlow instances with unexpected behavior.
 ### 4.3 What Makes Issues Hard to Diagnose
 
 **Lack of Introspection**:
+
 - No way to inspect generated nodes
 - No way to see schema cache state
 - No way to debug connection pools
 - No way to trace workflow execution
 
 **Poor Error Messages**:
+
 - Errors don't include context
 - No suggestions for fixes
 - No links to documentation
 - No examples of correct usage
 
 **Architectural Complexity**:
+
 - 5 layers of abstraction (User code → WorkflowBuilder → Runtime → DataFlowNode → AsyncSQL → Database)
 - State distributed across components
 - Side effects not obvious from code
 - Lifecycle management not explicit
 
 **Documentation Gaps**:
+
 - No troubleshooting guide
 - No common errors section
 - No debug mode documentation
@@ -1493,6 +1572,7 @@ results, _ = runtime.execute(workflow.build())
 ```
 
 **Why It Works**:
+
 - Simple model (no complex types)
 - Direct parameters (no connections)
 - Single operation (no workflow complexity)
@@ -1503,12 +1583,14 @@ results, _ = runtime.execute(workflow.build())
 ### 5.2 Configuration Patterns That Work
 
 **Zero-Config Development**:
+
 ```python
 db = DataFlow()  # Uses SQLite :memory: by default
 # Perfect for quick prototyping
 ```
 
 **Basic Production**:
+
 ```python
 db = DataFlow(
     database_url="postgresql://user:pass@host/db",
@@ -1518,6 +1600,7 @@ db = DataFlow(
 ```
 
 **Enterprise (When Fully Understood)**:
+
 ```python
 db = DataFlow(
     database_url="postgresql://...",
@@ -1533,6 +1616,7 @@ db = DataFlow(
 ### 5.3 Usage Patterns That Work
 
 **Pattern 1: Simple CRUD Workflows**
+
 ```python
 # Create
 workflow.add_node("UserCreateNode", "create", {...})
@@ -1553,6 +1637,7 @@ workflow.add_node("UserDeleteNode", "delete", {"id": "user-123"})
 ```
 
 **Pattern 2: Bulk Operations**
+
 ```python
 workflow.add_node("UserBulkCreateNode", "import", {
     "data": [
@@ -1565,6 +1650,7 @@ workflow.add_node("UserBulkCreateNode", "import", {
 ```
 
 **Pattern 3: List with Filters**
+
 ```python
 workflow.add_node("UserListNode", "search", {
     "filter": {"active": True},
@@ -1577,6 +1663,7 @@ workflow.add_node("UserListNode", "search", {
 ### 5.4 Happy Path vs Edge Cases
 
 **Happy Path** (Works 95% of time):
+
 - Single DataFlow instance
 - Basic model types (str, int, bool, float)
 - Direct parameter passing
@@ -1585,6 +1672,7 @@ workflow.add_node("UserListNode", "search", {
 - LocalRuntime with single execution
 
 **Edge Cases** (Requires expertise):
+
 - Multiple DataFlow instances
 - Complex types (List[str], Optional[datetime])
 - Workflow connections with dot notation
@@ -1596,6 +1684,7 @@ workflow.add_node("UserListNode", "search", {
 - Custom node development
 
 **The Gap**:
+
 - Happy path is 95% of use cases
 - But edge cases are where production apps live
 - No clear path from happy path to edge cases
@@ -1614,6 +1703,7 @@ workflow.add_node("UserListNode", "search", {
 **Recommended**: "Opinionated defaults with explicit opt-in for complexity"
 
 **Principles**:
+
 1. **Fail Fast at Registration Time** (not runtime)
 2. **Actionable Error Messages** (with fix suggestions)
 3. **Built-in Introspection** (debug mode always available)
@@ -1802,6 +1892,7 @@ raise DataFlowParameterError(
 ```
 
 **Output**:
+
 ```
 ❌ Missing required fields in UserCreateNode
 
@@ -1883,6 +1974,7 @@ $ kailash-dataflow inspect workflow.py
 ```
 
 **Output**:
+
 ```
 DataFlow Workflow Inspection
 ============================
@@ -1968,7 +2060,7 @@ DataFlow Documentation
 
 **Each Troubleshooting Guide Format**:
 
-```markdown
+````markdown
 # CreateNode vs UpdateNode Confusion
 
 ## The Problem
@@ -1985,10 +2077,12 @@ workflow.add_node("UserUpdateNode", "update", {
 
 # Error: KeyError: 'filter'
 ```
+````
 
 ## Root Cause
 
 UpdateNode and CreateNode have **different parameter structures**:
+
 - CreateNode: Flat parameters `{field: value, ...}`
 - UpdateNode: Nested structure `{filter: {...}, fields: {...}}`
 
@@ -2005,6 +2099,7 @@ workflow.add_node("UserUpdateNode", "update", {
 ## Why This Design?
 
 UpdateNode supports bulk updates, so needs to specify:
+
 1. `filter`: Which records to update (can match multiple)
 2. `fields`: What fields to change
 
@@ -2012,19 +2107,20 @@ CreateNode only creates one record, so just needs field values.
 
 ## Quick Reference
 
-| Operation | Parameter Structure |
-|-----------|-------------------|
-| Create | `{field: value, ...}` |
-| Read | `{id: value}` or `{filter: {...}}` |
-| Update | `{filter: {...}, fields: {...}}` |
-| Delete | `{id: value}` or `{filter: {...}}` |
-| List | `{filter: {...}, limit: int, ...}` |
+| Operation | Parameter Structure                |
+| --------- | ---------------------------------- |
+| Create    | `{field: value, ...}`              |
+| Read      | `{id: value}` or `{filter: {...}}` |
+| Update    | `{filter: {...}, fields: {...}}`   |
+| Delete    | `{id: value}` or `{filter: {...}}` |
+| List      | `{filter: {...}, limit: int, ...}` |
 
 ## Related
 
 - [CRUD Operations Guide](../common-tasks/crud-operations.md)
 - [Parameter Passing Patterns](../core-concepts/parameter-passing.md)
-```
+
+````
 
 ### 6.6 Reduced Complexity Strategies
 
@@ -2072,7 +2168,7 @@ db = DataFlow.production(
     database_url="postgresql://...",
     pool_size=50  # Custom pool size
 )
-```
+````
 
 #### Strategy 2: Explicit Migration Control
 
@@ -2236,18 +2332,21 @@ if not workflow_validation.valid:
 ### Phase 1: Critical Fixes (1-2 weeks)
 
 **Priority 1 - Error Messages**:
+
 - [ ] Implement DataFlowError base class with context/solutions
 - [ ] Rewrite all error messages to use new format
 - [ ] Add embedded documentation to common errors
 - [ ] Test with users to validate clarity
 
 **Priority 2 - Validation**:
+
 - [ ] Add model validation at registration (primary key check)
 - [ ] Add configuration validation at init (incompatibility detection)
 - [ ] Add build-time workflow validation
 - [ ] Add parameter structure validation with clear errors
 
 **Priority 3 - Debug Mode**:
+
 - [ ] Implement comprehensive debug logging
 - [ ] Add introspection API (models, nodes, cache, pools)
 - [ ] Create CLI inspection tool
@@ -2256,18 +2355,21 @@ if not workflow_validation.valid:
 ### Phase 2: API Improvements (2-3 weeks)
 
 **Priority 1 - Configuration Profiles**:
+
 - [ ] Implement DataFlow.development()
 - [ ] Implement DataFlow.production()
 - [ ] Implement DataFlow.enterprise()
 - [ ] Document profile system
 
 **Priority 2 - Unified Parameter Structure**:
+
 - [ ] Design new parameter structure (backward compatible)
 - [ ] Implement parameter migration
 - [ ] Update all documentation
 - [ ] Deprecation warnings for old patterns
 
 **Priority 3 - Migration System Simplification**:
+
 - [ ] Explicit migration control API
 - [ ] Simplified migration strategy selection
 - [ ] Better migration error messages
@@ -2276,18 +2378,21 @@ if not workflow_validation.valid:
 ### Phase 3: Documentation Overhaul (2-3 weeks)
 
 **Priority 1 - Troubleshooting Guides**:
+
 - [ ] Write 10 most common error guides
 - [ ] Create error → solution index
 - [ ] Link errors to troubleshooting guides
 - [ ] Test with users
 
 **Priority 2 - Mental Model Building**:
+
 - [ ] Write "Why Not an ORM?" guide
 - [ ] Create workflow architecture diagrams
 - [ ] Write parameter passing guide
 - [ ] Create comparison tables (DataFlow vs Django vs SQLAlchemy)
 
 **Priority 3 - Task-Oriented Guides**:
+
 - [ ] CRUD operations guide
 - [ ] Bulk operations guide
 - [ ] Query patterns guide
@@ -2297,18 +2402,21 @@ if not workflow_validation.valid:
 ### Phase 4: Advanced Features (3-4 weeks)
 
 **Priority 1 - Runtime Improvements**:
+
 - [ ] Implement persistent event loop (v0.10.1)
 - [ ] Fix connection pooling isolation
 - [ ] Improve schema cache invalidation
 - [ ] Add connection health monitoring
 
 **Priority 2 - Developer Tools**:
+
 - [ ] Build workflow visualization tool
 - [ ] Create performance profiler
 - [ ] Add migration simulator
 - [ ] Build test data generator
 
 **Priority 3 - Integration Improvements**:
+
 - [ ] Simplify Nexus integration
 - [ ] Improve multi-instance patterns
 - [ ] Add cross-instance coordination
@@ -2321,32 +2429,39 @@ if not workflow_validation.valid:
 ### Developer Experience Metrics
 
 **Time to First Success** (Target: 5 minutes):
+
 - Current: 15-30 minutes (reading docs, understanding concepts)
 - Target: 5 minutes (copy/paste example that works)
 
 **Time to Debug Common Errors** (Target: 2 minutes):
+
 - Current: 10-20 minutes per error
 - Target: 2 minutes (error message provides fix)
 
 **Documentation Search Time** (Target: 30 seconds):
+
 - Current: 5-10 minutes (searching for right concept)
 - Target: 30 seconds (error links to relevant doc)
 
 **Token Usage per Issue** (Target: <10K):
+
 - Current: 40K-60K tokens for complex issues
 - Target: <10K tokens (error provides solution)
 
 ### Technical Metrics
 
 **Build-Time Error Detection** (Target: 90%):
+
 - Current: 20% (most errors at runtime)
 - Target: 90% (catch errors at build time)
 
 **Error Message Actionability** (Target: 95%):
+
 - Current: 30% (error messages don't suggest fixes)
 - Target: 95% (error messages include solutions)
 
 **First-Time Success Rate** (Target: 80%):
+
 - Current: 40% (users hit errors frequently)
 - Target: 80% (most workflows work first try)
 
@@ -2355,6 +2470,7 @@ if not workflow_validation.valid:
 ## Conclusion
 
 DataFlow is architecturally sophisticated but experientially complex. The framework's core design is sound:
+
 - Workflow-based database operations
 - Automatic node generation
 - Multi-database support
@@ -2363,6 +2479,7 @@ DataFlow is architecturally sophisticated but experientially complex. The framew
 However, the path from "I want to do X" to "It works" requires navigating too many concepts, parameters, and architectural details.
 
 **The redesign should focus on**:
+
 1. **Error messages that teach** (not just report failures)
 2. **Validation that prevents** (not just detects problems)
 3. **Documentation that guides** (not just references concepts)
@@ -2371,6 +2488,7 @@ However, the path from "I want to do X" to "It works" requires navigating too ma
 **Key insight**: DataFlow doesn't need architectural changes. It needs experiential changes that make its powerful architecture accessible to developers who don't have time to read 100K+ lines of code.
 
 **Target outcome**: 100x improvement in developer experience measured by:
+
 - 10x faster time to first success (30min → 3min)
 - 10x faster debugging (20min → 2min)
 - 10x fewer tokens per issue (60K → 6K)

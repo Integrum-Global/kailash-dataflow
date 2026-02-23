@@ -448,7 +448,7 @@ max_tokens = 150
             {
                 "code": """
 import uuid
-response_text = "DataFlow is a zero-config database framework built on Kailash SDK. It automatically generates 9 workflow nodes per model for database operations. It supports PostgreSQL, MySQL, and SQLite with full feature parity."
+response_text = "DataFlow is a zero-config database framework built on Kailash SDK. It automatically generates 11 workflow nodes per model for database operations (7 CRUD + 4 Bulk). It supports PostgreSQL, MySQL, and SQLite with full feature parity."
 tokens_used = 50
 cost = 0.002
 completion_id = f"cmpl_{uuid.uuid4().hex[:24]}"

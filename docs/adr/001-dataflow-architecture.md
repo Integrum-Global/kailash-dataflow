@@ -1,16 +1,20 @@
 # ADR-001: DataFlow Architecture - 100% Kailash SDK Integration
 
 ## Status
+
 Accepted
 
 ## Context
+
 Developers familiar with Django, Rails, and other web frameworks struggle with Kailash SDK's powerful but complex database infrastructure. They need:
+
 - Zero-configuration development experience
 - Production-grade quality without manual configuration
 - Familiar patterns while leveraging Kailash's superior architecture
 - Easy migration path from existing frameworks
 
 ## Decision
+
 Build DataFlow as a thin orchestration layer that composes existing Kailash SDK components:
 
 1. **Use WorkflowConnectionPool** for all database connections
@@ -20,7 +24,7 @@ Build DataFlow as a thin orchestration layer that composes existing Kailash SDK 
 
 2. **Extend AsyncSQLDatabaseNode** for model operations
    - Leverage existing query execution, validation, and pooling
-   - Add model-specific query templates (9 nodes per model)
+   - Add model-specific query templates (11 nodes per model)
    - Include bulk operations: BulkCreateNode, BulkUpdateNode, BulkDeleteNode, BulkUpsertNode
    - Maintain full compatibility with Kailash workflows
 
@@ -45,6 +49,7 @@ Build DataFlow as a thin orchestration layer that composes existing Kailash SDK 
 ## Consequences
 
 ### Positive
+
 - No duplicate code - 100% reuse of battle-tested components
 - Automatically inherits all Kailash improvements
 - Consistent with SDK architecture patterns
@@ -52,17 +57,20 @@ Build DataFlow as a thin orchestration layer that composes existing Kailash SDK 
 - Production-ready features out of the box
 
 ### Negative
+
 - Slight abstraction overhead (negligible in practice)
 - Must maintain compatibility with underlying SDK changes
 - Limited customization without SDK modifications
 
 ### Neutral
+
 - Developers get familiar patterns with superior infrastructure
 - Learning curve exists but is worthwhile for benefits gained
 
 ## Implementation Notes
 
 ### Component Mapping
+
 ```
 DataFlow Component -> Kailash SDK Component
 -----------------------------------------
@@ -76,12 +84,14 @@ Schema Management -> Adapted from AdminSchemaManager
 ```
 
 ### Key Design Principles
+
 1. **Composition over inheritance** - Use SDK components as-is
 2. **Configuration over code** - Leverage SDK's config system
 3. **Convention over configuration** - Add sensible defaults
 4. **Progressive disclosure** - Simple by default, powerful when needed
 
 ## References
+
 - Kailash SDK architecture: sdk-contributors/architecture/
 - Django comparison: sdk-contributors/architecture/analysis/kailash-vs-django-architecture.md
 - Performance analysis: sdk-contributors/architecture/perf/

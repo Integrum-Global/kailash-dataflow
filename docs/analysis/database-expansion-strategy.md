@@ -1,4 +1,5 @@
 # DataFlow Database Expansion Strategy
+
 **Version**: 1.0
 **Date**: 2025-10-21
 **Status**: Strategic Analysis
@@ -8,7 +9,8 @@
 DataFlow v0.5.6 has achieved 100% feature parity across PostgreSQL, MySQL, and SQLite with a proven adapter pattern. This document analyzes the success pattern and provides a comprehensive roadmap for expanding to document, vector, graph, time-series, and key-value databases.
 
 **Key Recommendations**:
-1. **MongoDB First**: Highest ROI, mature async driver, fits 9-node pattern
+
+1. **MongoDB First**: Highest ROI, mature async driver, fits 11-node pattern
 2. **Tiered Adapter Architecture**: Introduce specialized base classes for non-relational patterns
 3. **Phased Rollout**: 10 databases over 3 phases based on market demand and technical feasibility
 
@@ -19,6 +21,7 @@ DataFlow v0.5.6 has achieved 100% feature parity across PostgreSQL, MySQL, and S
 ### 1.1 Core Success Factors
 
 #### Clear Abstraction Boundaries (base.py:16-128)
+
 ```python
 class DatabaseAdapter(ABC):
     """Abstract base class for database adapters."""
@@ -38,6 +41,7 @@ class DatabaseAdapter(ABC):
 ```
 
 **Why This Works**:
+
 - **Async-first design**: All operations use async/await (base.py:63-82)
 - **Connection pooling abstraction**: Shared pattern across all adapters
 - **Query parameterization**: Database-specific parameter style conversion (base.py:109-114)
@@ -46,24 +50,28 @@ class DatabaseAdapter(ABC):
 #### Database-Specific Optimizations Without Breaking Pattern
 
 **PostgreSQL** (postgresql.py:16-424):
+
 - Uses `asyncpg` for native performance (postgresql.py:49)
 - Parameter style: `$1, $2, $3` conversion (postgresql.py:307-322)
 - Features: JSON, arrays, CTEs, window functions (postgresql.py:290-305)
 - Connection pool: `asyncpg.create_pool()` (postgresql.py:55)
 
 **MySQL** (mysql.py:22-525):
+
 - Uses `aiomysql` with DictCursor (mysql.py:110)
 - Parameter style: `%s` conversion (mysql.py:325-335)
 - Features: JSON (5.7+), window functions (8.0+) (mysql.py:307-323)
 - Storage engine awareness: InnoDB detection (mysql.py:400-439)
 
 **SQLite** (sqlite.py:82-854):
+
 - Uses `aiosqlite` with connection pooling (sqlite.py:251-285)
 - Parameter style: `?` (no conversion needed) (sqlite.py:488-496)
 - Enterprise features: WAL mode, custom pool, performance monitoring (sqlite.py:115-196)
 - Performance optimization: 64MB cache, memory-mapped I/O (sqlite.py:133-192)
 
 #### Automatic Node Generation Pattern (core/nodes.py:81-135)
+
 ```python
 def generate_crud_nodes(self, model_name: str, fields: Dict[str, Any]):
     """Generate CRUD workflow nodes for a model."""
@@ -76,35 +84,43 @@ def generate_crud_nodes(self, model_name: str, fields: Dict[str, Any]):
     }
 ```
 
-**9-Node Pattern**:
+**11-Node Pattern**:
+
 1. CreateNode - Single record insert
 2. ReadNode - Single record read by ID
 3. UpdateNode - Single record update
 4. DeleteNode - Single record delete
 5. ListNode - Query multiple records
-6. BulkCreateNode - Batch insert
-7. BulkUpdateNode - Batch update
-8. BulkDeleteNode - Batch delete
-9. BulkUpsertNode - Batch upsert (INSERT ON CONFLICT)
+6. UpsertNode - Single record insert or update
+7. CountNode - Count matching records
+8. BulkCreateNode - Batch insert
+9. BulkUpdateNode - Batch update
+10. BulkDeleteNode - Batch delete
+11. BulkUpsertNode - Batch upsert (INSERT ON CONFLICT)
 
 **File References**:
+
 - Core nodes: `src/dataflow/core/nodes.py:81-135`
 - Bulk operations: `src/dataflow/nodes/bulk_*.py`
 
 ### 1.2 Key Architectural Patterns
 
 #### Connection String Parsing (adapters/connection_parser.py)
+
 - Handles special characters in passwords
 - Extracts scheme, host, port, database, credentials
 - Query parameter parsing for SSL modes, charsets, etc.
 
 #### Transaction Management
+
 - **PostgreSQL**: Context manager with `asyncpg.Transaction` (postgresql.py:398-424)
 - **MySQL**: Context manager with `BEGIN/COMMIT/ROLLBACK` (mysql.py:501-525)
 - **SQLite**: WAL mode with savepoints (sqlite.py:808-854)
 
 #### Feature Detection (supports_feature method)
+
 Each adapter declares feature support:
+
 - PostgreSQL: Arrays, hstore, fulltext, spatial indexes
 - MySQL: JSON (5.7+), CTEs (8.0+), fulltext
 - SQLite: FTS5, JSON1, CTEs, upsert
@@ -115,15 +131,16 @@ Each adapter declares feature support:
 
 ### 2.1 Document Databases
 
-| Database | Market Share | Python Driver | Async Support | Fit Score |
-|----------|-------------|---------------|---------------|-----------|
-| **MongoDB** | 45% NoSQL market | `motor` (official) | ✅ Native async | 9/10 |
-| CouchDB | 5% | `aiocouch` | ✅ | 6/10 |
-| RethinkDB | 2% | `rethinkdb-async` | ✅ | 5/10 |
+| Database    | Market Share     | Python Driver      | Async Support   | Fit Score |
+| ----------- | ---------------- | ------------------ | --------------- | --------- |
+| **MongoDB** | 45% NoSQL market | `motor` (official) | ✅ Native async | 9/10      |
+| CouchDB     | 5%               | `aiocouch`         | ✅              | 6/10      |
+| RethinkDB   | 2%               | `rethinkdb-async`  | ✅              | 5/10      |
 
 #### Architectural Challenges
 
 **Schema Operations** - What breaks?
+
 ```python
 # Current SQL pattern
 async def get_table_schema(self, table_name: str) -> Dict[str, Dict]:
@@ -131,6 +148,7 @@ async def get_table_schema(self, table_name: str) -> Dict[str, Dict]:
 ```
 
 **Document DB equivalent** (MongoDB):
+
 ```python
 async def get_collection_schema(self, collection_name: str) -> Dict[str, Dict]:
     # MongoDB has no enforced schema - infer from documents
@@ -142,6 +160,7 @@ async def get_collection_schema(self, collection_name: str) -> Dict[str, Dict]:
 ```
 
 **CRUD Translation**:
+
 - ✅ CREATE → `collection.insert_one(document)`
 - ✅ READ → `collection.find_one({"_id": ObjectId(...)})`
 - ✅ UPDATE → `collection.update_one(filter, {"$set": updates})`
@@ -149,12 +168,14 @@ async def get_collection_schema(self, collection_name: str) -> Dict[str, Dict]:
 - ✅ LIST → `collection.find(query).to_list(length=100)`
 
 **Bulk Operations**:
+
 - ✅ BulkCreate → `collection.insert_many(documents)`
 - ✅ BulkUpdate → `collection.bulk_write([UpdateOne(...), ...])`
 - ✅ BulkDelete → `collection.delete_many(filter)`
 - ✅ BulkUpsert → `collection.update_many(filter, update, upsert=True)`
 
 **Unique Operations to Add**:
+
 - **AggregateNode**: MongoDB aggregation pipelines
 - **IndexNode**: Create/manage indexes
 - **LookupNode**: `$lookup` for joins across collections
@@ -166,17 +187,18 @@ async def get_collection_schema(self, collection_name: str) -> Dict[str, Dict]:
 
 ### 2.2 Vector Databases
 
-| Database | License | Python Driver | Async Support | Production Ready | Fit Score |
-|----------|---------|---------------|---------------|------------------|-----------|
-| **Milvus** | Apache 2.0 | `pymilvus` | ⚠️ Partial | ✅ | 8/10 |
-| **Weaviate** | BSD-3 | `weaviate-client` | ✅ | ✅ | 8/10 |
-| **Chroma** | Apache 2.0 | `chromadb` | ✅ | ⚠️ Beta | 7/10 |
-| **Qdrant** | Apache 2.0 | `qdrant-client` | ✅ | ✅ | 8/10 |
-| **pgvector** | PostgreSQL | `asyncpg` | ✅ | ✅ | 10/10 |
+| Database     | License    | Python Driver     | Async Support | Production Ready | Fit Score |
+| ------------ | ---------- | ----------------- | ------------- | ---------------- | --------- |
+| **Milvus**   | Apache 2.0 | `pymilvus`        | ⚠️ Partial    | ✅               | 8/10      |
+| **Weaviate** | BSD-3      | `weaviate-client` | ✅            | ✅               | 8/10      |
+| **Chroma**   | Apache 2.0 | `chromadb`        | ✅            | ⚠️ Beta          | 7/10      |
+| **Qdrant**   | Apache 2.0 | `qdrant-client`   | ✅            | ✅               | 8/10      |
+| **pgvector** | PostgreSQL | `asyncpg`         | ✅            | ✅               | 10/10     |
 
 #### Architectural Challenges
 
 **Schema Operations** - Collections, not tables:
+
 ```python
 # Vector DB pattern (Milvus example)
 async def create_collection(self, collection_name: str, schema: Dict[str, Dict]) -> None:
@@ -198,6 +220,7 @@ async def create_collection(self, collection_name: str, schema: Dict[str, Dict])
 ```
 
 **CRUD Translation**:
+
 - ✅ CREATE → `collection.insert(entities)` with embeddings
 - ⚠️ READ → Not by ID, but by vector similarity
 - ⚠️ UPDATE → Many vector DBs don't support updates (delete+insert)
@@ -205,18 +228,21 @@ async def create_collection(self, collection_name: str, schema: Dict[str, Dict])
 - ⚠️ LIST → Semantic search, not traditional listing
 
 **Unique Operations Required**:
+
 - **EmbedNode**: Generate embeddings from text/images (integration with Kaizen)
 - **SimilaritySearchNode**: KNN/ANN search by vector
 - **HybridSearchNode**: Combine vector + metadata filtering
 - **IndexBuildNode**: Build HNSW/IVF indexes
 
 **Fit Score Analysis**:
+
 - **Milvus**: 8/10 - Most mature, but partial async support
 - **Weaviate**: 8/10 - Good async, GraphQL interface
 - **Qdrant**: 8/10 - Excellent async, gRPC and REST
 - **pgvector**: 10/10 - **RECOMMENDED FIRST** - Leverage existing PostgreSQL adapter!
 
 **pgvector Strategy** (CRITICAL):
+
 ```python
 # Extend existing PostgreSQLAdapter for vector operations
 class PostgreSQLVectorAdapter(PostgreSQLAdapter):
@@ -233,16 +259,17 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter):
 
 ### 2.3 Graph Databases
 
-| Database | License | Python Driver | Async Support | Production Ready | Fit Score |
-|----------|---------|---------------|---------------|------------------|-----------|
-| **Neo4j** | GPL/Commercial | `neo4j` | ✅ | ✅ | 7/10 |
-| **ArangoDB** | Apache 2.0 | `python-arango` | ⚠️ Limited | ✅ | 6/10 |
-| **JanusGraph** | Apache 2.0 | `gremlinpython` | ⚠️ | ✅ | 5/10 |
-| **Dgraph** | Apache 2.0 | `pydgraph` | ✅ | ✅ | 7/10 |
+| Database       | License        | Python Driver   | Async Support | Production Ready | Fit Score |
+| -------------- | -------------- | --------------- | ------------- | ---------------- | --------- |
+| **Neo4j**      | GPL/Commercial | `neo4j`         | ✅            | ✅               | 7/10      |
+| **ArangoDB**   | Apache 2.0     | `python-arango` | ⚠️ Limited    | ✅               | 6/10      |
+| **JanusGraph** | Apache 2.0     | `gremlinpython` | ⚠️            | ✅               | 5/10      |
+| **Dgraph**     | Apache 2.0     | `pydgraph`      | ✅            | ✅               | 7/10      |
 
 #### Architectural Challenges
 
 **Schema Operations** - Nodes, edges, properties:
+
 ```python
 # Graph DB pattern (Neo4j Cypher)
 async def get_graph_schema(self) -> Dict[str, Any]:
@@ -251,6 +278,7 @@ async def get_graph_schema(self) -> Dict[str, Any]:
 ```
 
 **CRUD Translation** - Completely different model:
+
 - ⚠️ CREATE → `CREATE (n:Person {name: $name})` (nodes) or `CREATE (a)-[:KNOWS]->(b)` (edges)
 - ⚠️ READ → `MATCH (n:Person {id: $id}) RETURN n`
 - ⚠️ UPDATE → `MATCH (n:Person {id: $id}) SET n.name = $name`
@@ -258,12 +286,13 @@ async def get_graph_schema(self) -> Dict[str, Any]:
 - ⚠️ LIST → `MATCH (n:Person) RETURN n LIMIT 100`
 
 **Unique Operations Required**:
+
 - **TraverseNode**: `MATCH (a)-[:FRIEND*1..3]->(b)` (multi-hop traversal)
 - **PathFindNode**: Shortest path algorithms
 - **CentralityNode**: PageRank, betweenness centrality
 - **CommunityDetectionNode**: Louvain, label propagation
 
-**Fit Score**: 5-7/10 - **Significant architecture divergence**. Graph queries don't map cleanly to 9-node CRUD pattern.
+**Fit Score**: 5-7/10 - **Significant architecture divergence**. Graph queries don't map cleanly to 11-node CRUD pattern.
 
 **Recommendation**: Graph databases require **GraphAdapter** base class with different node pattern.
 
@@ -271,14 +300,15 @@ async def get_graph_schema(self) -> Dict[str, Any]:
 
 ### 2.4 Time-Series Databases
 
-| Database | License | Python Driver | Async Support | Production Ready | Fit Score |
-|----------|---------|---------------|---------------|------------------|-----------|
-| **TimescaleDB** | Apache 2.0 | `asyncpg` (PostgreSQL) | ✅ | ✅ | 10/10 |
-| **InfluxDB** | MIT | `influxdb-client` | ✅ | ✅ | 7/10 |
+| Database        | License    | Python Driver          | Async Support | Production Ready | Fit Score |
+| --------------- | ---------- | ---------------------- | ------------- | ---------------- | --------- |
+| **TimescaleDB** | Apache 2.0 | `asyncpg` (PostgreSQL) | ✅            | ✅               | 10/10     |
+| **InfluxDB**    | MIT        | `influxdb-client`      | ✅            | ✅               | 7/10      |
 
 #### Architectural Challenges
 
 **Schema Operations** - Hypertables, retention policies:
+
 ```python
 # TimescaleDB pattern (extends PostgreSQL)
 async def create_hypertable(self, table_name: str, time_column: str):
@@ -286,6 +316,7 @@ async def create_hypertable(self, table_name: str, time_column: str):
 ```
 
 **CRUD Translation**:
+
 - ✅ CREATE → INSERT with timestamps
 - ⚠️ READ → Time-range queries, not by ID
 - ⚠️ UPDATE → Discouraged in time-series (append-only)
@@ -293,12 +324,14 @@ async def create_hypertable(self, table_name: str, time_column: str):
 - ✅ LIST → Time-range queries with aggregations
 
 **Unique Operations Required**:
+
 - **TimeRangeNode**: Query by time window
 - **DownsampleNode**: Time-based aggregation
 - **RetentionPolicyNode**: Auto-delete old data
 - **ContinuousAggregateNode**: Real-time rollups
 
 **Fit Score Analysis**:
+
 - **TimescaleDB**: 10/10 - **RECOMMENDED** - Extends PostgreSQL adapter!
 - **InfluxDB**: 7/10 - Requires specialized adapter
 
@@ -308,14 +341,15 @@ async def create_hypertable(self, table_name: str, time_column: str):
 
 ### 2.5 Key-Value Stores
 
-| Database | License | Python Driver | Async Support | Production Ready | Fit Score |
-|----------|---------|---------------|---------------|------------------|-----------|
-| **Redis** | BSD-3 | `redis-py` | ✅ | ✅ | 6/10 |
-| **DynamoDB** | AWS Managed | `aioboto3` | ✅ | ✅ | 5/10 |
+| Database     | License     | Python Driver | Async Support | Production Ready | Fit Score |
+| ------------ | ----------- | ------------- | ------------- | ---------------- | --------- |
+| **Redis**    | BSD-3       | `redis-py`    | ✅            | ✅               | 6/10      |
+| **DynamoDB** | AWS Managed | `aioboto3`    | ✅            | ✅               | 5/10      |
 
 #### Architectural Challenges
 
 **Schema Operations** - No schema:
+
 ```python
 # Redis has no schema
 async def get_schema(self) -> Dict:
@@ -323,6 +357,7 @@ async def get_schema(self) -> Dict:
 ```
 
 **CRUD Translation**:
+
 - ✅ CREATE → `SET key value`
 - ✅ READ → `GET key`
 - ✅ UPDATE → `SET key new_value` (overwrites)
@@ -330,6 +365,7 @@ async def get_schema(self) -> Dict:
 - ⚠️ LIST → `KEYS pattern` (discouraged in production) or `SCAN`
 
 **Unique Operations Required**:
+
 - **ExpireNode**: Set TTL on keys
 - **IncrementNode**: Atomic counter operations
 - **PubSubNode**: Publish/subscribe patterns
@@ -346,18 +382,21 @@ async def get_schema(self) -> Dict:
 ### 3.1 Why MongoDB First?
 
 **Market Demand**:
+
 - 45% of NoSQL market share
 - 30+ million downloads/month of `pymongo`
 - Primary choice for document-based applications
 - Strong Python ecosystem with `motor` (async driver)
 
 **Technical Feasibility**:
+
 - ✅ Mature async driver: `motor` (official, actively maintained)
-- ✅ Excellent fit for 9-node pattern (8/10 mapping)
+- ✅ Excellent fit for 11-node pattern (8/10 mapping)
 - ✅ Collection-based model maps to DataFlow's table-centric design
 - ✅ Aggregation pipelines extend naturally
 
 **Implementation Effort**: MEDIUM
+
 - Base adapter: ~400 lines (similar to MySQL)
 - 9 core nodes: Leverage existing pattern
 - Additional nodes: 4-5 MongoDB-specific (aggregation, indexing)
@@ -470,6 +509,7 @@ class MongoDBAdapter(DatabaseAdapter):
 ### 3.3 MongoDB-Specific Nodes
 
 **AggregateNode** - MongoDB aggregation pipelines:
+
 ```python
 class UserAggregateNode(AsyncNode):
     """Execute MongoDB aggregation pipeline."""
@@ -483,6 +523,7 @@ class UserAggregateNode(AsyncNode):
 ```
 
 **IndexNode** - Create/manage indexes:
+
 ```python
 class UserIndexNode(AsyncNode):
     """Create index on MongoDB collection."""
@@ -506,24 +547,28 @@ class UserIndexNode(AsyncNode):
 ### 3.4 Implementation Roadmap
 
 **Phase 1** (Week 1-2): Core Adapter
+
 - [ ] `MongoDBAdapter` class with motor integration
 - [ ] Connection pooling and lifecycle management
 - [ ] Basic CRUD operations (insert_one, find_one, update_one, delete_one)
 - [ ] Transaction support (MongoDB 4.0+ with replica sets)
 
 **Phase 2** (Week 3): Node Generation
+
 - [ ] Extend `NodeGenerator` to detect MongoDB instances
 - [ ] Generate 9 core nodes (Create, Read, Update, Delete, List, BulkCreate, BulkUpdate, BulkDelete, BulkUpsert)
 - [ ] Map DataFlow models to MongoDB collections
 - [ ] Schema inference from documents
 
 **Phase 3** (Week 4): MongoDB-Specific Features
+
 - [ ] AggregateNode for pipelines
 - [ ] IndexNode for index management
 - [ ] LookupNode for `$lookup` joins
 - [ ] UnwindNode for array operations
 
 **Phase 4** (Week 5): Testing & Documentation
+
 - [ ] Unit tests (Tier 1): Adapter methods
 - [ ] Integration tests (Tier 2): Real MongoDB instance
 - [ ] E2E tests (Tier 3): Full workflows
@@ -540,6 +585,7 @@ class UserIndexNode(AsyncNode):
 #### pgvector (PostgreSQL Extension) - **RECOMMENDED FIRST**
 
 **Pros**:
+
 - ✅ Leverage existing PostgreSQL adapter (minimal new code)
 - ✅ Proven stability (PostgreSQL foundation)
 - ✅ ACID transactions with vectors
@@ -547,10 +593,12 @@ class UserIndexNode(AsyncNode):
 - ✅ Easy deployment (single database)
 
 **Cons**:
+
 - ⚠️ Limited to PostgreSQL users
 - ⚠️ Smaller index types than specialized DBs (IVFFlat, HNSW)
 
 **Implementation**:
+
 ```python
 # Extend existing PostgreSQLAdapter
 class PostgreSQLVectorAdapter(PostgreSQLAdapter):
@@ -600,17 +648,20 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter):
 #### Milvus (Standalone Vector DB)
 
 **Pros**:
+
 - ✅ Purpose-built for vectors (high performance)
 - ✅ Supports 11+ index types (HNSW, IVF, ANNOY, etc.)
 - ✅ Hybrid search (vector + scalar filtering)
 - ✅ Horizontal scalability
 
 **Cons**:
+
 - ⚠️ Async support is partial (`pymilvus` mostly sync)
 - ⚠️ Separate infrastructure (not embedded)
 - ⚠️ Eventual consistency model
 
 **Implementation**:
+
 ```python
 # adapters/milvus.py
 
@@ -698,16 +749,19 @@ class MilvusAdapter(DatabaseAdapter):
 #### Qdrant (Modern Vector DB)
 
 **Pros**:
+
 - ✅ Excellent async support (`qdrant-client` is async-first)
 - ✅ REST + gRPC APIs (flexible)
 - ✅ Embedded mode (no separate server needed)
 - ✅ Excellent filtering and hybrid search
 
 **Cons**:
+
 - ⚠️ Smaller ecosystem than Milvus
 - ⚠️ Less mature (released 2021)
 
 **Implementation**:
+
 ```python
 # adapters/qdrant.py
 
@@ -772,6 +826,7 @@ class QdrantAdapter(DatabaseAdapter):
 **How vector ops fit DataFlow**:
 
 **Option A: Replace CRUD nodes with vector-specific nodes**
+
 ```python
 # Instead of UserReadNode, generate UserVectorSearchNode
 @db.model
@@ -789,6 +844,7 @@ class Document:
 ```
 
 **Option B: Additional nodes alongside CRUD**
+
 ```python
 # Keep standard CRUD nodes, add vector-specific operations
 # - DocumentCreateNode (standard insert)
@@ -805,6 +861,7 @@ class Document:
 ### 4.3 Integration with Kaizen (AI Framework)
 
 **Embedding Generation** - Integrate with Kaizen's AI agents:
+
 ```python
 # kaizen integration for automatic embeddings
 from kaizen.agents import EmbeddingAgent
@@ -835,12 +892,12 @@ class DocumentCreateNode(AsyncNode):
 
 ### 5.1 Production-Ready Options
 
-| Database | Query Language | Async Driver | Fit Score | Recommendation |
-|----------|---------------|--------------|-----------|----------------|
-| **Neo4j** | Cypher | `neo4j` (async) | 7/10 | Best choice |
-| **ArangoDB** | AQL | `python-arango` (limited async) | 6/10 | Multi-model DB |
-| **JanusGraph** | Gremlin | `gremlinpython` (partial async) | 5/10 | Complex setup |
-| **Dgraph** | GraphQL+- | `pydgraph` (async) | 7/10 | Good alternative |
+| Database       | Query Language | Async Driver                    | Fit Score | Recommendation   |
+| -------------- | -------------- | ------------------------------- | --------- | ---------------- |
+| **Neo4j**      | Cypher         | `neo4j` (async)                 | 7/10      | Best choice      |
+| **ArangoDB**   | AQL            | `python-arango` (limited async) | 6/10      | Multi-model DB   |
+| **JanusGraph** | Gremlin        | `gremlinpython` (partial async) | 5/10      | Complex setup    |
+| **Dgraph**     | GraphQL+-      | `pydgraph` (async)              | 7/10      | Good alternative |
 
 ### 5.2 Neo4j Implementation Strategy
 
@@ -881,6 +938,7 @@ class GraphAdapter(DatabaseAdapter):
 ```
 
 **Neo4j Adapter**:
+
 ```python
 # adapters/neo4j.py
 
@@ -959,7 +1017,7 @@ class Neo4jAdapter(GraphAdapter):
 
 ### 5.3 Graph-Specific Node Pattern
 
-Instead of 9 CRUD nodes, generate **graph operation nodes**:
+Instead of 11 standard nodes, generate **graph operation nodes**:
 
 1. **CreateNodeNode** - Create graph node
 2. **CreateEdgeNode** - Create relationship
@@ -972,6 +1030,7 @@ Instead of 9 CRUD nodes, generate **graph operation nodes**:
 9. **DeleteEdgeNode** - Delete relationship
 
 **Example**:
+
 ```python
 # Auto-generated for @db.model Person in Neo4j
 class PersonCreateNodeNode(AsyncNode):
@@ -1012,18 +1071,18 @@ class PersonCreateEdgeNode(AsyncNode):
 
 ### Ranked Database Expansion (1-10)
 
-| Rank | Database | Category | Demand | Feasibility | Value | Effort | Total Score | Phase |
-|------|----------|----------|--------|-------------|-------|--------|-------------|-------|
-| 1 | **pgvector** | Vector (PostgreSQL ext) | 9/10 | 10/10 | 10/10 | LOW | 9.5/10 | Phase 1 |
-| 2 | **MongoDB** | Document | 10/10 | 9/10 | 9/10 | MEDIUM | 9.3/10 | Phase 1 |
-| 3 | **TimescaleDB** | Time-series (PostgreSQL ext) | 8/10 | 10/10 | 9/10 | LOW | 8.9/10 | Phase 1 |
-| 4 | **Qdrant** | Vector | 7/10 | 9/10 | 8/10 | MEDIUM | 8.0/10 | Phase 2 |
-| 5 | **Redis** | Key-value | 9/10 | 8/10 | 6/10 | LOW | 7.6/10 | Phase 2 |
-| 6 | **Neo4j** | Graph | 7/10 | 7/10 | 8/10 | HIGH | 7.3/10 | Phase 2 |
-| 7 | **Milvus** | Vector | 6/10 | 7/10 | 8/10 | MEDIUM | 6.9/10 | Phase 3 |
-| 8 | **InfluxDB** | Time-series | 6/10 | 7/10 | 7/10 | MEDIUM | 6.6/10 | Phase 3 |
-| 9 | **DynamoDB** | Key-value (AWS) | 7/10 | 6/10 | 6/10 | MEDIUM | 6.4/10 | Phase 3 |
-| 10 | **ArangoDB** | Multi-model | 5/10 | 6/10 | 7/10 | HIGH | 6.0/10 | Phase 3 |
+| Rank | Database        | Category                     | Demand | Feasibility | Value | Effort | Total Score | Phase   |
+| ---- | --------------- | ---------------------------- | ------ | ----------- | ----- | ------ | ----------- | ------- |
+| 1    | **pgvector**    | Vector (PostgreSQL ext)      | 9/10   | 10/10       | 10/10 | LOW    | 9.5/10      | Phase 1 |
+| 2    | **MongoDB**     | Document                     | 10/10  | 9/10        | 9/10  | MEDIUM | 9.3/10      | Phase 1 |
+| 3    | **TimescaleDB** | Time-series (PostgreSQL ext) | 8/10   | 10/10       | 9/10  | LOW    | 8.9/10      | Phase 1 |
+| 4    | **Qdrant**      | Vector                       | 7/10   | 9/10        | 8/10  | MEDIUM | 8.0/10      | Phase 2 |
+| 5    | **Redis**       | Key-value                    | 9/10   | 8/10        | 6/10  | LOW    | 7.6/10      | Phase 2 |
+| 6    | **Neo4j**       | Graph                        | 7/10   | 7/10        | 8/10  | HIGH   | 7.3/10      | Phase 2 |
+| 7    | **Milvus**      | Vector                       | 6/10   | 7/10        | 8/10  | MEDIUM | 6.9/10      | Phase 3 |
+| 8    | **InfluxDB**    | Time-series                  | 6/10   | 7/10        | 7/10  | MEDIUM | 6.6/10      | Phase 3 |
+| 9    | **DynamoDB**    | Key-value (AWS)              | 7/10   | 6/10        | 6/10  | MEDIUM | 6.4/10      | Phase 3 |
+| 10   | **ArangoDB**    | Multi-model                  | 5/10   | 6/10        | 7/10  | HIGH   | 6.0/10      | Phase 3 |
 
 ---
 
@@ -1039,12 +1098,14 @@ DatabaseAdapter (base.py:16-128)
 ```
 
 **Strengths**:
+
 - Clean abstraction for SQL databases
 - Shared connection pooling pattern
 - Consistent transaction model
 - Schema introspection
 
 **Limitations**:
+
 - SQL-centric (execute_query expects SQL strings)
 - Table-centric schema model
 - CRUD assumes relational structure
@@ -1132,6 +1193,7 @@ class BaseAdapter(ABC):
 ### 7.4 Specialized Adapter Categories
 
 **DocumentAdapter**:
+
 ```python
 class DocumentAdapter(BaseAdapter):
     """Base class for document-oriented databases."""
@@ -1162,6 +1224,7 @@ class DocumentAdapter(BaseAdapter):
 ```
 
 **VectorAdapter**:
+
 ```python
 class VectorAdapter(BaseAdapter):
     """Base class for vector databases."""
@@ -1195,6 +1258,7 @@ class VectorAdapter(BaseAdapter):
 Some databases support multiple paradigms:
 
 **ArangoDB** (document + graph):
+
 ```python
 class ArangoDBAdapter(DocumentAdapter, GraphAdapter):
     """ArangoDB supports both document and graph operations."""
@@ -1211,6 +1275,7 @@ class ArangoDBAdapter(DocumentAdapter, GraphAdapter):
 ```
 
 **PostgreSQL with pgvector** (relational + vector):
+
 ```python
 class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
     """PostgreSQL with pgvector extension."""
@@ -1225,17 +1290,20 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 ### 7.6 Migration Path
 
 **Phase 1**: Keep current architecture, add new categories
+
 - No breaking changes to existing PostgreSQL/MySQL/SQLite adapters
 - Introduce `BaseAdapter` as new root
 - Make `DatabaseAdapter` inherit from `BaseAdapter`
 - Existing code continues to work
 
 **Phase 2**: Implement specialized adapters
+
 - `DocumentAdapter` for MongoDB
 - `VectorAdapter` for pgvector (extends PostgreSQLAdapter)
 - Add category detection to `DataFlow.__init__`
 
 **Phase 3**: Full hierarchy
+
 - `GraphAdapter`, `KeyValueAdapter`
 - Hybrid adapters (ArangoDB, etc.)
 - Backward compatibility maintained
@@ -1246,30 +1314,30 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 
 ### 8.1 Technical Risks
 
-| Risk | Probability | Impact | Mitigation Strategy |
-|------|------------|--------|-------------------|
-| **Async driver immaturity** | MEDIUM | HIGH | Prioritize databases with proven async drivers (motor, asyncpg+pgvector) |
-| **Schema mismatch** | HIGH | MEDIUM | Adapter-specific schema models, clear documentation |
-| **Performance degradation** | LOW | HIGH | Benchmarking before/after, connection pool tuning |
-| **Breaking changes to existing adapters** | LOW | HIGH | Strict backward compatibility testing, semantic versioning |
-| **Transaction model mismatch** | MEDIUM | MEDIUM | Per-adapter transaction abstraction, clear feature flags |
+| Risk                                      | Probability | Impact | Mitigation Strategy                                                      |
+| ----------------------------------------- | ----------- | ------ | ------------------------------------------------------------------------ |
+| **Async driver immaturity**               | MEDIUM      | HIGH   | Prioritize databases with proven async drivers (motor, asyncpg+pgvector) |
+| **Schema mismatch**                       | HIGH        | MEDIUM | Adapter-specific schema models, clear documentation                      |
+| **Performance degradation**               | LOW         | HIGH   | Benchmarking before/after, connection pool tuning                        |
+| **Breaking changes to existing adapters** | LOW         | HIGH   | Strict backward compatibility testing, semantic versioning               |
+| **Transaction model mismatch**            | MEDIUM      | MEDIUM | Per-adapter transaction abstraction, clear feature flags                 |
 
 ### 8.2 Operational Risks
 
-| Risk | Probability | Impact | Mitigation Strategy |
-|------|------------|--------|-------------------|
-| **Increased maintenance burden** | HIGH | MEDIUM | Tiered support (full vs. community), automated testing |
-| **Documentation sprawl** | MEDIUM | MEDIUM | Template-based docs, auto-generation from adapters |
-| **User confusion** | MEDIUM | HIGH | Clear decision guides, framework advisor tool |
-| **Support requests** | HIGH | LOW | Comprehensive examples, troubleshooting guides |
+| Risk                             | Probability | Impact | Mitigation Strategy                                    |
+| -------------------------------- | ----------- | ------ | ------------------------------------------------------ |
+| **Increased maintenance burden** | HIGH        | MEDIUM | Tiered support (full vs. community), automated testing |
+| **Documentation sprawl**         | MEDIUM      | MEDIUM | Template-based docs, auto-generation from adapters     |
+| **User confusion**               | MEDIUM      | HIGH   | Clear decision guides, framework advisor tool          |
+| **Support requests**             | HIGH        | LOW    | Comprehensive examples, troubleshooting guides         |
 
 ### 8.3 Market Risks
 
-| Risk | Probability | Impact | Mitigation Strategy |
-|------|------------|--------|-------------------|
-| **Low adoption of new adapters** | MEDIUM | LOW | User surveys before implementation, beta testing |
-| **Database vendor changes** | LOW | MEDIUM | Abstract vendor-specific features, multiple options per category |
-| **Competing frameworks** | MEDIUM | MEDIUM | Focus on unique value (zero-config + Kailash integration) |
+| Risk                             | Probability | Impact | Mitigation Strategy                                              |
+| -------------------------------- | ----------- | ------ | ---------------------------------------------------------------- |
+| **Low adoption of new adapters** | MEDIUM      | LOW    | User surveys before implementation, beta testing                 |
+| **Database vendor changes**      | LOW         | MEDIUM | Abstract vendor-specific features, multiple options per category |
+| **Competing frameworks**         | MEDIUM      | MEDIUM | Focus on unique value (zero-config + Kailash integration)        |
 
 ---
 
@@ -1280,29 +1348,34 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 **Goal**: Maximum value with minimal risk - extend existing PostgreSQL adapter
 
 #### Week 1-2: pgvector Support
+
 - Extend `PostgreSQLAdapter` with vector operations
 - Add `VectorSearchNode`, `CreateVectorIndexNode`
 - Integration tests with real pgvector extension
 - Documentation: "Vector Search with PostgreSQL"
 
 **Deliverables**:
+
 - `PostgreSQLVectorAdapter` class
 - 3 new node types (VectorSearch, VectorIndex, VectorUpsert)
 - 20+ tests (unit + integration)
 - User guide with RAG example
 
 #### Week 3-4: TimescaleDB Support
+
 - Extend `PostgreSQLAdapter` with hypertable operations
 - Add `CreateHypertableNode`, `TimeRangeQueryNode`, `RetentionPolicyNode`
 - Integration tests with real TimescaleDB
 - Documentation: "Time-Series Data with TimescaleDB"
 
 **Deliverables**:
+
 - `TimescaleDBAdapter` class
 - 4 new node types
 - Time-series example (IoT sensor data)
 
 #### Week 5-8: MongoDB Core
+
 - Implement `MongoDBAdapter` from scratch
 - Generate 9 standard nodes for MongoDB collections
 - Add `AggregateNode`, `IndexNode`
@@ -1310,6 +1383,7 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 - Documentation: "Document Database with MongoDB"
 
 **Deliverables**:
+
 - Full `MongoDBAdapter` with motor integration
 - 9 core nodes + 2 MongoDB-specific nodes
 - 50+ tests across all tiers
@@ -1324,34 +1398,40 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 **Goal**: Add specialized vector and graph databases
 
 #### Week 9-11: Qdrant Vector Database
+
 - Implement `QdrantAdapter` (async-first)
 - Vector-specific node pattern
 - Hybrid search examples
 - Integration with Kaizen for embeddings
 
 **Deliverables**:
+
 - `QdrantAdapter` class
 - Vector workflow examples
 - Kaizen integration guide
 
 #### Week 12-14: Neo4j Graph Database
+
 - Implement `GraphAdapter` base class
 - `Neo4jAdapter` with Cypher support
 - Graph-specific node pattern (CreateNode, CreateEdge, Traverse, PathFind)
 - Social network example
 
 **Deliverables**:
+
 - `GraphAdapter` base class
 - `Neo4jAdapter` implementation
 - Graph algorithm examples
 
 #### Week 15-16: Redis Integration
+
 - Implement `RedisAdapter` as caching layer
 - NOT a primary database adapter
 - Integration with DataFlow for query caching
 - Pub/sub pattern for invalidation
 
 **Deliverables**:
+
 - `RedisAdapter` for caching
 - Cache integration middleware
 - Performance benchmarks
@@ -1365,37 +1445,45 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 **Goal**: Complete coverage with advanced databases
 
 #### Week 17-19: Milvus Vector Database
+
 - Implement `MilvusAdapter` with async wrapper
 - Advanced indexing (HNSW, IVF, ANNOY)
 - Benchmark vs. pgvector
 
 **Deliverables**:
+
 - `MilvusAdapter` class
 - Performance comparison guide
 
 #### Week 20-21: InfluxDB Time-Series
+
 - Implement `InfluxDBAdapter`
 - Flux query language integration
 - Continuous queries
 
 **Deliverables**:
+
 - `InfluxDBAdapter` class
 - Time-series analytics examples
 
 #### Week 22-23: DynamoDB
+
 - Implement `DynamoDBAdapter` (AWS)
 - Handle eventual consistency
 - Single-table design patterns
 
 **Deliverables**:
+
 - `DynamoDBAdapter` class
 - AWS deployment guide
 
 #### Week 24: ArangoDB Multi-Model
+
 - Implement `ArangoDBAdapter` (document + graph)
 - Demonstrate hybrid queries
 
 **Deliverables**:
+
 - `ArangoDBAdapter` class
 - Multi-model examples
 
@@ -1406,16 +1494,19 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 ## 10. Success Metrics
 
 ### Adoption Metrics
+
 - **Downloads per database adapter**: Track individual adapter usage
 - **GitHub stars/forks**: Indicator of community interest
 - **User surveys**: Satisfaction scores per adapter
 
 ### Technical Metrics
+
 - **Test coverage**: Maintain >90% for all adapters
 - **Performance benchmarks**: Query latency, throughput for each database
 - **Bug reports**: Track by adapter type
 
 ### Documentation Metrics
+
 - **Example completeness**: Each adapter has 5+ working examples
 - **Time-to-first-query**: How long to get started (target: <15 minutes)
 
@@ -1424,6 +1515,7 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 ## 11. Appendix: File References
 
 ### Current Implementation
+
 - **Base adapter**: `src/dataflow/adapters/base.py:16-128`
 - **PostgreSQL**: `src/dataflow/adapters/postgresql.py:16-424`
 - **MySQL**: `src/dataflow/adapters/mysql.py:22-525`
@@ -1432,10 +1524,12 @@ class PostgreSQLVectorAdapter(PostgreSQLAdapter, VectorAdapter):
 - **Connection parsing**: `src/dataflow/adapters/connection_parser.py`
 
 ### Architecture Documentation
+
 - **ADR-001**: `docs/adr/001-dataflow-architecture.md` - 100% Kailash SDK integration
 - **Framework guide**: `CLAUDE.md` - DataFlow patterns and critical rules
 
 ### Testing Structure
+
 - Unit tests: `tests/unit/`
 - Integration tests: `tests/integration/` (real databases, NO MOCKING)
 - E2E tests: `tests/e2e/`
@@ -1476,6 +1570,7 @@ DataFlow's adapter pattern has proven highly successful for SQL databases. Expan
 5. **Maintain backward compatibility** - Existing adapters unchanged
 
 **Recommended First Steps**:
+
 1. Implement `PostgreSQLVectorAdapter` (pgvector support)
 2. Implement `TimescaleDBAdapter` (time-series support)
 3. Implement `MongoDBAdapter` (document database support)

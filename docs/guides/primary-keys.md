@@ -21,7 +21,7 @@ class User:
 # Error: ValidationError: Field 'id' is required but 'user_id' was provided
 ```
 
-DataFlow's automatic node generation (9-10 nodes per model) expects the `id` field for all CRUD operations. Without it, generated nodes cannot function correctly.
+DataFlow's automatic node generation (11 nodes per model) expects the `id` field for all CRUD operations. Without it, generated nodes cannot function correctly.
 
 ## How to Define Models Correctly
 
@@ -80,7 +80,7 @@ class User:
 
 ## Generated Nodes and the `id` Field
 
-When you define a model with the `id` field, DataFlow automatically generates 9-10 operation nodes. Each node expects the `id` field for its operations.
+When you define a model with the `id` field, DataFlow automatically generates 11 operation nodes (7 CRUD + 4 Bulk). Each node expects the `id` field for its operations.
 
 ### CreateNode
 
@@ -293,6 +293,7 @@ class User:
    - Integer IDs: Auto-increment sequences, internal counters
 
 3. **Use UUIDs for distributed systems**
+
    ```python
    @db.model
    class User:
@@ -304,6 +305,7 @@ class User:
    ```
 
 4. **Explicit ID generation (recommended)**
+
    ```python
    # ✅ Generate ID in application code
    workflow.add_node("UserCreateNode", "create", {

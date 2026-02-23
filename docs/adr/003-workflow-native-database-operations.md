@@ -1,44 +1,55 @@
 # ADR-003: Workflow-Native Database Operations
 
 ## Status
+
 Accepted
 
 ## Context
+
 Traditional ORMs (Django, SQLAlchemy) are request-scoped and synchronous. Kailash workflows are:
+
 - Long-running and distributed
 - Inherently asynchronous
 - Require transaction boundaries across nodes
 - Need connection persistence across workflow execution
 
 ## Decision
+
 Make database operations first-class workflow nodes by:
 
 1. **Auto-generating CRUD nodes from models**
    ```python
-@db.model
-class Product:
+   @db.model
+   class Product:
     name: str
     price: float
-
-# Automatically creates 9 nodes:
-# - ProductCreateNode, ProductReadNode, ProductUpdateNode, ProductDeleteNode, ProductListNode
-# - ProductBulkCreateNode, ProductBulkUpdateNode, ProductBulkDeleteNode, ProductBulkUpsertNode
    ```
 
+# Automatically creates 11 nodes:
+
+# - ProductCreateNode, ProductReadNode, ProductUpdateNode, ProductDeleteNode, ProductListNode,
+
+# ProductUpsertNode, ProductCountNode
+
+# - ProductBulkCreateNode, ProductBulkUpdateNode, ProductBulkDeleteNode, ProductBulkUpsertNode
+
+````
+
 2. **Workflow-scoped automatic data protection**
-   ```python
+```python
 workflow = WorkflowBuilder()
 # Automatic transaction management with high-level abstraction
 workflow.add_node("TransactionContextNode", "tx_context", {
-    "isolation_level": "READ_COMMITTED",
-    "timeout": 30
+ "isolation_level": "READ_COMMITTED",
+ "timeout": 30
 })
 workflow.add_node("ProductCreateNode", "create", {...})
 workflow.add_node("InventoryUpdateNode", "update", {...})
 # Automatic commit/rollback based on success/failure
-   ```
+````
 
 3. **Natural data flow between nodes**
+
    ```python
    workflow.add_connection("create", "update", "product_id")
    # Output of create flows as input to update
@@ -52,6 +63,7 @@ workflow.add_node("InventoryUpdateNode", "update", {...})
 ## Implementation
 
 ### Node Generation Pattern
+
 ```python
 def _generate_crud_nodes(self, cls: Type, model_meta: ModelMeta):
     # Extend AsyncSQLDatabaseNode for each operation
@@ -66,6 +78,7 @@ def _generate_crud_nodes(self, cls: Type, model_meta: ModelMeta):
 ```
 
 ### Transaction Management
+
 - High-level abstractions: TransactionContextNode for workflow coordination
 - Automatic pattern selection: Saga vs Two-Phase Commit based on requirements
 - Distributed transaction management with state persistence
@@ -73,6 +86,7 @@ def _generate_crud_nodes(self, cls: Type, model_meta: ModelMeta):
 - Enterprise-grade monitoring and deadlock detection
 
 ### Connection Management
+
 - WorkflowConnectionPool provides workflow-scoped connections
 - 50x capacity improvement over request-scoped pools
 - Actor-based isolation prevents leaks
@@ -81,6 +95,7 @@ def _generate_crud_nodes(self, cls: Type, model_meta: ModelMeta):
 ## Consequences
 
 ### Positive
+
 - Database operations integrate naturally with workflows
 - Transaction boundaries match business logic
 - Better resource utilization (connection reuse)
@@ -88,11 +103,13 @@ def _generate_crud_nodes(self, cls: Type, model_meta: ModelMeta):
 - Enables complex multi-step transactions
 
 ### Negative
+
 - Different mental model from traditional ORMs
 - Requires understanding workflow concepts
 - Connection lifetime differs from web frameworks
 
 ### Mitigation
+
 - Provide Django-like convenience methods
 - Clear documentation with examples
 - Migration guides from traditional ORMs
@@ -100,6 +117,7 @@ def _generate_crud_nodes(self, cls: Type, model_meta: ModelMeta):
 ## Examples
 
 ### Simple CRUD Workflow
+
 ```python
 workflow = Product.create_workflow()
 workflow.add_node("ProductCreateNode", "create", {
@@ -116,6 +134,7 @@ results, run_id = runtime.execute(workflow.build())
 ```
 
 ### Complex Transaction
+
 ```python
 workflow = WorkflowBuilder()
 
@@ -145,18 +164,21 @@ workflow.add_connection("order", "cancel_order",
 ## Performance Benefits
 
 ### vs Django ORM
+
 - **Connection Pooling**: 50x more capacity
 - **Query Execution**: Async by default (10x throughput)
 - **Transaction Overhead**: Workflow-scoped (90% reduction)
 - **Resource Utilization**: Actor-based (near 100% efficiency)
 
 ### vs Raw SQL
+
 - **Safety**: Parameterized queries, validation
 - **Monitoring**: Built-in metrics and tracing
 - **Resilience**: Automatic retries, circuit breakers
 - **Maintainability**: Type-safe, self-documenting
 
 ## References
+
 - Kailash workflow architecture
 - WorkflowConnectionPool design
 - Distributed transaction patterns

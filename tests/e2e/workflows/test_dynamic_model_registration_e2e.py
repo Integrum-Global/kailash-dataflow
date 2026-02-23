@@ -84,7 +84,7 @@ class TestDynamicModelRegistration:
             ]
             for node_type in expected_nodes:
                 assert node_type in nodes, f"Missing {node_type} node for {model_name}"
-            print(f"✓ All 9 nodes generated for {model_name}")
+            print(f"✓ All 11 nodes generated for {model_name}")
 
         # Step 4: Verify models are in local registry
         local_models = db1.list_models()
@@ -199,7 +199,7 @@ class TestDynamicModelRegistration:
         print("\n=== TEST SUMMARY ===")
         print("✅ Schema discovery works")
         print("✅ Dynamic model registration works")
-        print("✅ All 9 nodes generated per model")
+        print("✅ All 11 nodes generated per model")
         print("✅ Models persist in registry")
         print("✅ Model reconstruction works")
         print("✅ Workflows can be built without @db.model")

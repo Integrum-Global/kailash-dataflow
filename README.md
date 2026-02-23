@@ -8,13 +8,13 @@
 
 ## ⚠️ Common Mistakes (Read This First!)
 
-| Mistake | Impact | Correct Approach |
-|---------|--------|------------------|
-| **Using `user_id` or `model_id` instead of `id`** | 10-20 min debugging | **CRITICAL**: Primary key MUST be named `id` (not `user_id`, `agent_id`, etc.) |
-| **Applying CreateNode pattern to UpdateNode** | 1-2 hours debugging | CreateNode uses flat fields, UpdateNode uses `{"filter": {...}, "fields": {...}}` |
-| **Including `created_at`/`updated_at` in updates** | Validation errors | DataFlow auto-manages these fields - NEVER include them manually |
-| **Wrong node naming** | Node not found errors | Use `ModelOperationNode` pattern (e.g., `UserCreateNode`, not `User_Create`) |
-| **Missing `db_instance` parameter** | Generic validation errors | ALL DataFlow nodes require `db_instance` and `model_name` parameters |
+| Mistake                                            | Impact                    | Correct Approach                                                                  |
+| -------------------------------------------------- | ------------------------- | --------------------------------------------------------------------------------- |
+| **Using `user_id` or `model_id` instead of `id`**  | 10-20 min debugging       | **CRITICAL**: Primary key MUST be named `id` (not `user_id`, `agent_id`, etc.)    |
+| **Applying CreateNode pattern to UpdateNode**      | 1-2 hours debugging       | CreateNode uses flat fields, UpdateNode uses `{"filter": {...}, "fields": {...}}` |
+| **Including `created_at`/`updated_at` in updates** | Validation errors         | DataFlow auto-manages these fields - NEVER include them manually                  |
+| **Wrong node naming**                              | Node not found errors     | Use `ModelOperationNode` pattern (e.g., `UserCreateNode`, not `User_Create`)      |
+| **Missing `db_instance` parameter**                | Generic validation errors | ALL DataFlow nodes require `db_instance` and `model_name` parameters              |
 
 ### Critical Rules
 
@@ -54,10 +54,12 @@ workflow.add_node("UserUpdateNode", "update", {
 ## 🚀 Quick Start
 
 ### Prerequisites
+
 - PostgreSQL 12+ OR MySQL 5.7+ (recommended for production), SQLite 3.x (development/testing), OR MongoDB 4.0+ (document database)
 - Python 3.12+
 
 ### Installation
+
 ```bash
 pip install kailash-dataflow
 # or
@@ -65,6 +67,7 @@ pip install kailash[dataflow]
 ```
 
 ### Basic Usage
+
 ```python
 from dataflow import DataFlow
 
@@ -92,6 +95,7 @@ class User:
 ## 🎯 What Makes DataFlow Different?
 
 ### Multi-Database Support
+
 ```python
 # Production PostgreSQL
 db = DataFlow("postgresql://user:pass@localhost/dbname")
@@ -119,6 +123,7 @@ db = DataFlow(
 ```
 
 ### Real Database Operations (Currently Available)
+
 ```python
 # Traditional ORMs: Imperative code
 User.objects.create(name="Alice")  # Django
@@ -139,6 +144,7 @@ workflow.add_node("UserListNode", "find_users", {
 ```
 
 ### MongoDB-Style Query Builder (NEW!)
+
 ```python
 # Get QueryBuilder from any model
 builder = User.query_builder()
@@ -165,6 +171,7 @@ workflow.add_node("UserListNode", "search", {
 ```
 
 ### Database Support Status
+
 ```python
 # PostgreSQL: Full feature support
 db = DataFlow(database_url="postgresql://user:pass@localhost/db")
@@ -181,12 +188,13 @@ schema = db.discover_schema(use_real_inspection=True)  # PostgreSQL only
 ```
 
 ### Database Operations as Workflow Nodes
+
 ```python
 # Traditional ORMs: Imperative code
 user = User.objects.create(name="Alice")  # Django
 user = User(name="Alice"); session.add(user)  # SQLAlchemy
 
-# DataFlow: Workflow-native (9 nodes per model!)
+# DataFlow: Workflow-native (11 nodes per model!)
 workflow = WorkflowBuilder()
 workflow.add_node("UserCreateNode", "create_user", {
     "name": "Alice",
@@ -198,6 +206,7 @@ workflow.add_node("UserListNode", "find_users", {
 ```
 
 ### Enterprise Configuration
+
 ```python
 # Multi-tenancy configuration (query modification planned)
 db = DataFlow(multi_tenant=True)
@@ -218,6 +227,7 @@ db = DataFlow(
 ## 🔧 Context-Aware Improvements (v0.4.7+)
 
 ### String ID Preservation
+
 ```python
 # String IDs are now preserved without forced integer conversion
 @db.model
@@ -235,6 +245,7 @@ workflow.add_node("SessionCreateNode", "create", {
 ```
 
 ### Multi-Instance Isolation
+
 ```python
 # Each DataFlow instance maintains separate context
 dev_db = DataFlow("sqlite:///dev.db")
@@ -254,6 +265,7 @@ class User:  # Same name, different instance - works!
 ```
 
 ### Deferred Schema Operations
+
 - **Synchronous registration**: Models register immediately with @db.model
 - **Async table creation**: Tables created on first use, not registration
 - **Better performance**: No blocking during model definition phase
@@ -261,9 +273,10 @@ class User:  # Same name, different instance - works!
 ## 🚦 Implementation Status
 
 ### ✅ Currently Available (Production-Ready)
+
 - **Database Schema Generation**: Complete CREATE TABLE for PostgreSQL, MySQL, SQLite
 - **Auto-Migration System**: PostgreSQL-only, production-ready automatic schema synchronization
-- **Real Database Operations**: All 9 CRUD + bulk nodes execute actual SQL
+- **Real Database Operations**: All 11 CRUD + bulk nodes execute actual SQL
 - **SQL Security**: Parameterized queries prevent SQL injection
 - **Connection Management**: Connection pooling, DDL execution, error handling
 - **Workflow Integration**: Full compatibility with WorkflowBuilder/LocalRuntime
@@ -278,11 +291,13 @@ class User:  # Same name, different instance - works!
 - **MongoDB Document Database**: Complete NoSQL support with flexible schema, aggregation pipelines, and 8 specialized workflow nodes (v0.6.0+)
 
 ### ⚠️ Current Limitations
+
 - **Schema Discovery**: Real database introspection (`discover_schema(use_real_inspection=True)`) is currently supported for PostgreSQL and SQLite only
 - **Complex Migrations**: Some SQLite migration operations limited by ALTER TABLE syntax
 - **Production Use**: Thorough testing recommended for production deployments
 
 ### 🔄 Planned Features (Roadmap)
+
 - **Redis Query Caching**: `User.cached_query()` with automatic invalidation
 - **Multi-Database Runtime**: SQLite/MySQL execution support
 - **Advanced Multi-Tenancy**: Automatic query modification for tenant isolation
@@ -290,16 +305,19 @@ class User:  # Same name, different instance - works!
 ## 📚 Documentation
 
 ### Getting Started
+
 - **[5-Minute Tutorial](docs/getting-started/quickstart.md)** - Build your first app
 - **[Core Concepts](docs/getting-started/concepts.md)** - Understand DataFlow
 - **[Examples](examples/)** - Complete applications
 
 ### Development
+
 - **[Models](docs/development/models.md)** - Define your schema
 - **[CRUD Operations](docs/development/crud.md)** - Basic operations
 - **[Relationships](docs/development/relationships.md)** - Model associations
 
 ### Production
+
 - **[Deployment](docs/production/deployment.md)** - Go to production
 - **[Performance](docs/production/performance.md)** - Optimization guide
 - **[Monitoring](docs/advanced/monitoring.md)** - Observability
@@ -307,6 +325,7 @@ class User:  # Same name, different instance - works!
 ## 💡 Real-World Examples
 
 ### E-Commerce Platform
+
 ```python
 # Define your models
 @db.model
@@ -344,6 +363,7 @@ workflow.add_node("ProductUpdateNode", "update_stock", {
 ```
 
 ### Multi-Tenant SaaS (Current Implementation)
+
 ```python
 # Enable multi-tenancy configuration
 db = DataFlow(
@@ -370,6 +390,7 @@ workflow.add_node("UserListNode", "list_users", {
 ```
 
 ### High-Performance ETL (Current Implementation)
+
 ```python
 # Bulk operations with real database execution
 workflow.add_node("UserBulkCreateNode", "import_users", {
@@ -392,6 +413,7 @@ workflow.add_node("UserListNode", "active_users", {
 ```
 
 ### RAG Application with Vector Search (v0.6.0+)
+
 ```python
 from dataflow import DataFlow
 from dataflow.adapters import PostgreSQLVectorAdapter
@@ -434,6 +456,7 @@ relevant_docs = results["search"]["results"]
 ```
 
 ### MongoDB Document Database (v0.6.0+)
+
 ```python
 from dataflow import DataFlow
 from dataflow.adapters import MongoDBAdapter
@@ -542,13 +565,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 ## 📊 Performance & Testing Status
 
 ### Current Performance
+
 - **Real SQL execution** with parameterized queries (PostgreSQL, SQLite)
 - **Real NoSQL execution** with MongoDB query language
 - **Connection pooling** with configurable pool sizes
 - **Bulk operations** with batching for large datasets
+- **11 nodes auto-generated per model** (7 CRUD + 4 Bulk)
 - **95% unit test pass rate** (615/648 tests passing)
 
 ### Recent Test Improvements
+
 - **100% NO MOCKING compliance** in Tier 2-3 tests
 - **Real infrastructure testing** with PostgreSQL
 - **167 test files** covering all scenarios
@@ -556,6 +582,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 - **Fixed critical bugs**: checksum tracking, field type serialization
 
 ### Testing Requirements
+
 - PostgreSQL 12+ required for SQL integration testing
 - MongoDB 4.0+ required for NoSQL integration testing
 - Performance benchmarks available for PostgreSQL and MongoDB

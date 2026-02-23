@@ -241,7 +241,7 @@ class PerformanceBenchmark:
                 field2: int
                 field3: bool = True
 
-            # Test that all 9 nodes can be referenced
+            # Test that all 11 nodes can be referenced
             workflow = WorkflowBuilder()
             node_types = [
                 "TestModelCreateNode",

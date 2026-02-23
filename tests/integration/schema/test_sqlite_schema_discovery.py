@@ -186,7 +186,7 @@ async def main():
         print("🎉 All tests passed! SQLite schema discovery is working!")
         print("\n🏆 ACHIEVEMENT: Complete PostgreSQL-SQLite Feature Parity!")
         print("   ✅ Model registration and @db.model decorator")
-        print("   ✅ Automatic node generation (9 nodes per model)")
+        print("   ✅ Automatic node generation (11 nodes per model)")
         print("   ✅ Migration system with schema state management")
         print("   ✅ Write protection system (all 6 levels)")
         print("   ✅ Enterprise features (WAL mode, connection pooling)")

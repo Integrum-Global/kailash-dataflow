@@ -1,6 +1,7 @@
 # DataFlow Under the Hood: How the Magic Works
 
 ## Table of Contents
+
 1. [Introduction](#introduction)
 2. [Simple Example Walkthrough](#simple-example-walkthrough)
 3. [Step-by-Step Execution Flow](#step-by-step-execution-flow)
@@ -451,7 +452,7 @@ def model(self, cls: Type) -> Type:
     return cls
 ```
 
-**Result**: From one simple Python class, DataFlow generates 9 different node classes, creates database schema, sets up migrations, and registers everything for use in workflows.
+**Result**: From one simple Python class, DataFlow generates 11 different node classes (7 CRUD + 4 Bulk), creates database schema, sets up migrations, and registers everything for use in workflows.
 
 ### Step 3: `workflow.add_node()` - Node Resolution and Configuration
 
@@ -733,6 +734,7 @@ The heart of DataFlow's "magic" is dynamic node generation. Here's how it create
 ### Example: What Gets Generated
 
 From this simple model:
+
 ```python
 @db.model
 class User:
@@ -1154,7 +1156,8 @@ DataFlow(
 What appears to be simple Python code triggers a sophisticated enterprise infrastructure:
 
 **From 4 lines of code, you get:**
-- 9 auto-generated database node classes
+
+- 11 auto-generated database node classes (7 CRUD + 4 Bulk)
 - Enterprise connection pooling
 - Automatic transaction management
 - Real-time performance monitoring
@@ -1169,6 +1172,7 @@ What appears to be simple Python code triggers a sophisticated enterprise infras
 This is why DataFlow can claim "Zero Configuration, Enterprise Power" - all the complexity is handled automatically, adapting to your environment and scaling needs without requiring any configuration from you.
 
 **Understanding this architecture helps you:**
+
 - Appreciate why DataFlow performs so well
 - Debug issues when they arise
 - Optimize for specific use cases

@@ -5,6 +5,7 @@
 ## Problem Analysis
 
 ### Current Pain Points
+
 1. **Poor Error Messages**: "Parameter 'data' missing" → requires reading 15K line files to understand
 2. **No Build-Time Validation**: Errors surface at runtime after deployment
 3. **Configuration Complexity**: 24+ parameters, unclear defaults
@@ -13,7 +14,9 @@
 6. **Migration Mysteries**: Lazy loading failures are opaque
 
 ### Root Cause
+
 DataFlow architecture is excellent, but lacks a **developer experience layer** that:
+
 - Guides users through setup
 - Validates early and often
 - Provides actionable error messages
@@ -23,6 +26,7 @@ DataFlow architecture is excellent, but lacks a **developer experience layer** t
 ## Platform Layer Architecture
 
 ### Design Principles
+
 1. **Zero Breaking Changes**: Platform layer wraps existing DataFlow
 2. **Opt-In**: Users can use raw DataFlow or platform layer
 3. **Progressive Disclosure**: Simple by default, powerful when needed
@@ -62,6 +66,7 @@ DataFlow architecture is excellent, but lacks a **developer experience layer** t
 **Purpose**: 1-minute setup for common use cases
 
 **API Design**:
+
 ```python
 from dataflow.platform import DataFlowStudio
 
@@ -84,7 +89,7 @@ studio = DataFlowStudio.quick_start(
 db = studio.db  # Original DataFlow instance
 
 # Access generated nodes
-user_nodes = studio.nodes("User")  # All 9 nodes for User model
+user_nodes = studio.nodes("User")  # All 11 nodes for User model
 create_user = user_nodes.create
 read_user = user_nodes.read
 # ... etc
@@ -100,6 +105,7 @@ if not validation.is_valid:
 ```
 
 **Configuration Profiles**:
+
 ```python
 # profiles/production.yaml
 production:
@@ -130,6 +136,7 @@ testing:
 **Purpose**: Transform cryptic errors into actionable guidance
 
 **Error Message Template**:
+
 ```python
 class DataFlowError:
     """Enhanced error with context, docs, and solutions"""
@@ -148,6 +155,7 @@ class DataFlowError:
 ```
 
 **Example Enhanced Error**:
+
 ```python
 # Before (Current):
 """
@@ -186,6 +194,7 @@ Parameter 'data' missing in CreateNode execution
 ```
 
 **Error Categories**:
+
 ```python
 # DF-1xx: Parameter Errors
 DF-101: Missing required parameter
@@ -219,6 +228,7 @@ DF-503: Database connection lost
 **Purpose**: Catch 90% of errors before runtime
 
 **API Design**:
+
 ```python
 from dataflow.platform import BuildValidator
 
@@ -266,6 +276,7 @@ if not report.is_valid:
 **Purpose**: Understand DataFlow state without reading 15K line files
 
 **API Design**:
+
 ```python
 from dataflow.platform import Inspector
 
@@ -274,7 +285,7 @@ inspector = Inspector(studio)
 # Inspect model
 model_info = inspector.model("User")
 print(model_info.schema)           # SQLAlchemy schema
-print(model_info.generated_nodes)  # List of 9 nodes
+print(model_info.generated_nodes)  # List of 11 nodes
 print(model_info.parameters)       # Expected parameters per node
 
 # Inspect node
@@ -306,6 +317,7 @@ inspector.interactive()  # Launches interactive debugger
 **Purpose**: Automatically fix common issues
 
 **API Design**:
+
 ```python
 from dataflow.platform import AutoFix
 
@@ -341,6 +353,7 @@ fixer.generate_workflow_template(
 ## Implementation Phases
 
 ### Phase 1: Critical DX Fixes (Week 1)
+
 **Goal**: Eliminate 80% of frustration
 
 1. **ErrorEnhancer** (Day 1-2)
@@ -359,6 +372,7 @@ fixer.generate_workflow_template(
    - Add connection flow visualization
 
 ### Phase 2: API Improvements (Week 2)
+
 **Goal**: 1-minute setup experience
 
 1. **DataFlowStudio** (Day 1-3)
@@ -372,6 +386,7 @@ fixer.generate_workflow_template(
    - Implement profile validation
 
 ### Phase 3: Introspection & Auto-Fix (Week 3)
+
 **Goal**: Debug without reading source
 
 1. **IntrospectionAPI** (Day 1-3)
@@ -385,6 +400,7 @@ fixer.generate_workflow_template(
    - Create code generation helpers
 
 ### Phase 4: Documentation (Week 4)
+
 **Goal**: Task-oriented, minimal-token docs
 
 1. **Error Documentation** (Day 1-2)
@@ -405,18 +421,21 @@ fixer.generate_workflow_template(
 ## Success Metrics
 
 ### Before (Current State)
+
 - Time to first success: **30 minutes** (with errors: 1+ week)
 - Time to debug error: **20 minutes** (with source reading: hours)
 - Token usage per issue: **60K-100K tokens**
 - User satisfaction: **Frustration**
 
 ### After (Platform Layer)
+
 - Time to first success: **5 minutes** (6x improvement)
 - Time to debug error: **2 minutes** (10x improvement)
 - Token usage per issue: **<10K tokens** (6x reduction)
 - User satisfaction: **Delight**
 
 ### Target Achievement
+
 - **100x overall improvement**: 6x faster × 10x easier × 6x fewer tokens = 360x
 - **1-minute setup**: quick_start() → ready-to-use database operations
 - **Self-healing**: 80% of errors auto-fixable
@@ -520,6 +539,7 @@ except DataFlowError as e:
 ## Backward Compatibility
 
 ### Zero Breaking Changes
+
 The platform layer is a **wrapper**, not a replacement:
 
 ```python
@@ -538,6 +558,7 @@ inspector = Inspector(db)  # Works with both!
 ```
 
 ### Migration Path
+
 1. **No changes required**: Existing code works as-is
 2. **Opt-in enhancement**: Add platform layer when needed
 3. **Gradual adoption**: Mix raw DataFlow and platform layer
@@ -546,19 +567,23 @@ inspector = Inspector(db)  # Works with both!
 ## Implementation Priority
 
 ### Must-Have (Phase 1)
+
 1. ✅ ErrorEnhancer - Immediate value
 2. ✅ BuildValidator - Prevent runtime errors
 3. ✅ Quick debug mode - Troubleshooting
 
 ### Should-Have (Phase 2)
+
 4. ✅ DataFlowStudio - Quick setup
 5. ✅ ConfigProfiles - Best practices
 
 ### Nice-to-Have (Phase 3)
+
 6. ✅ IntrospectionAPI - Advanced debugging
 7. ✅ FixScripts - Auto-repair
 
 ### Future (Phase 4)
+
 8. Documentation overhaul
 9. Interactive tutorials
 10. Video walkthroughs
@@ -571,6 +596,7 @@ The platform layer transforms DataFlow from a powerful but complex framework int
 - **After**: "DataFlow is powerful AND easy"
 
 **Key Innovation**: Not changing the core, but adding a layer that:
+
 - Guides users through setup
 - Validates early and often
 - Provides actionable errors

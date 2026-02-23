@@ -7,7 +7,7 @@ database connections and transaction rollback.
 
 Key Features Demonstrated:
 - @db.model decorator generating TDD-aware nodes
-- All 9 node types working with TDD transaction isolation
+- All 11 node types working with TDD transaction isolation
 - Shared test connections with <100ms performance
 - Automatic test cleanup through savepoints
 """

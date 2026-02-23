@@ -231,7 +231,7 @@ class TestDataFlowUserFlows:
 
         assert customer_model is not None
 
-        # Verify all 9 nodes are generated
+        # Verify all 11 nodes are generated
         customer_nodes = models["generated_nodes"][customer_model]
         expected_nodes = [
             "create",

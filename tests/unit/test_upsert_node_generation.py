@@ -160,7 +160,7 @@ class TestUpsertNodeGeneration:
         ), "Node from db2 should be bound to db2 instance"
 
     def test_upsert_node_count_per_model(self):
-        """Verify 10 nodes are generated per model (6 CRUD + 4 bulk)."""
+        """Verify 11 nodes are generated per model (7 CRUD + 4 bulk)."""
         # Arrange
         db = DataFlow(":memory:")
 
@@ -170,14 +170,15 @@ class TestUpsertNodeGeneration:
             id: str
             name: str
 
-        # Assert: Should have exactly 10 nodes
+        # Assert: Should have exactly 11 nodes
         expected_nodes = [
             "UserCreateNode",
             "UserReadNode",
             "UserUpdateNode",
             "UserDeleteNode",
             "UserListNode",
-            "UserUpsertNode",  # NEW: 6th CRUD node
+            "UserUpsertNode",
+            "UserCountNode",
             "UserBulkCreateNode",
             "UserBulkUpdateNode",
             "UserBulkDeleteNode",

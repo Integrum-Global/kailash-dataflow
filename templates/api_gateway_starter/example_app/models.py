@@ -17,7 +17,7 @@ def register_models(db: DataFlow):
     Example:
         >>> db = DataFlow(":memory:")
         >>> register_models(db)
-        >>> # 9 nodes generated per model automatically
+        >>> # 11 nodes generated per model automatically
     """
 
     @db.model

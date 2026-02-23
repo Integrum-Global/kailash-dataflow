@@ -69,13 +69,15 @@ class TestRealTDDIntegration:
             assert "User" in db._registered_models
             assert "User" in db._model_fields
 
-            # Verify all 9 node types were generated
+            # Verify all 11 node types were generated
             expected_nodes = [
                 "UserCreateNode",
                 "UserReadNode",
                 "UserUpdateNode",
                 "UserDeleteNode",
                 "UserListNode",
+                "UserUpsertNode",
+                "UserCountNode",
                 "UserBulkCreateNode",
                 "UserBulkUpdateNode",
                 "UserBulkDeleteNode",
